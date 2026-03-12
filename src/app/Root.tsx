@@ -1,10 +1,14 @@
-import { Outlet } from 'react-router';
+import { Outlet, Navigate } from 'react-router';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import { useTheme } from './theme-context';
 
 export default function Root() {
   const { theme } = useTheme();
+  
+  // Check authentication
+  const isAuth = localStorage.getItem('mp_auth') === 'true';
+  if (!isAuth) return <Navigate to="/login" replace />;
   
   return (
     <div className="app-shell relative h-screen transition-colors duration-300">
