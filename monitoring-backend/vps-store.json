@@ -1,0 +1,17 @@
+{
+  "staging": {
+    "id": "staging",
+    "name": "VPS Staging",
+    "host": "173.212.248.243",
+    "username": "mypresc",
+    "password": "MyPrescription2025"
+  },
+  "production": {
+    "id": "production",
+    "name": "VPS production",
+    "host": "197.140.18.168",
+    "port": 22,
+    "username": "yasmine",
+    "password": "YasmineMypresc"
+  }
+}

@@ -1,127 +1,211 @@
-import { useState, useEffect, useRef } from 'react';
-import { X, Terminal as TerminalIcon } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { X, Terminal as TerminalIcon, Loader2, Wifi, WifiOff } from 'lucide-react';
+import { Terminal as XTerm } from '@xterm/xterm';
+import { FitAddon } from '@xterm/addon-fit';
+import { WebLinksAddon } from '@xterm/addon-web-links';
+import '@xterm/xterm/css/xterm.css';
+
+const WS_URL = 'ws://localhost:3001';
 
 interface TerminalProps {
   server: {
+    id?: string;
     name: string;
-    ip: string;
+    ip?: string;
+    host?: string;
   };
   onClose: () => void;
 }
 
-const mockCommands = [
-  { cmd: 'ls -la', output: 'total 48\ndrwxr-xr-x  6 root root 4096 Mar  8 14:32 .\ndrwxr-xr-x 18 root root 4096 Mar  7 10:15 ..\ndrwxr-xr-x  3 root root 4096 Mar  8 14:32 app\n-rw-r--r--  1 root root  220 Mar  1 09:00 .bashrc\ndrwxr-xr-x  2 root root 4096 Mar  8 14:32 config' },
-  { cmd: 'docker ps', output: 'CONTAINER ID   IMAGE              STATUS          PORTS\na7f3c4d2e1b0   nginx:latest       Up 9 days       80->80/tcp\nb2e5f8a1c9d3   frontend:latest    Up 9 days       3000->3000/tcp\nc9d4e2f5a7b1   backend:latest     Up 9 days       5000->5000/tcp' },
-  { cmd: 'df -h', output: 'Filesystem      Size  Used Avail Use% Mounted on\n/dev/vda1        80G   45G   32G  59% /\ntmpfs           3.9G  1.2M  3.9G   1% /dev/shm' },
-  { cmd: 'free -h', output: '              total        used        free      shared  buff/cache   available\nMem:          7.7Gi       4.8Gi       1.2Gi       120Mi       1.7Gi       2.6Gi\nSwap:         2.0Gi       256Mi       1.7Gi' },
-];
-
 export default function Terminal({ server, onClose }: TerminalProps) {
-  const [history, setHistory] = useState<Array<{ type: 'input' | 'output'; content: string }>>([
-    { type: 'output', content: `Connected to ${server.name} (${server.ip})` },
-    { type: 'output', content: 'Welcome to Ubuntu 22.04 LTS' },
-    { type: 'output', content: '' },
-  ]);
-  const [input, setInput] = useState('');
-  const terminalRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const ip   = server.ip || server.host || '';
+  const id   = server.id || '';
+  const name = server.name || id;
+
+  const terminalDivRef = useRef<HTMLDivElement>(null);
+  const xtermRef       = useRef<XTerm | null>(null);
+  const fitAddonRef    = useRef<FitAddon | null>(null);
+  const wsRef          = useRef<WebSocket | null>(null);
+
+  const [connected,    setConnected]    = useState(false);
+  const [connecting,   setConnecting]   = useState(true);
+  const [error,        setError]        = useState<string | null>(null);
 
   useEffect(() => {
-    if (terminalRef.current) {
-      terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
-    }
-  }, [history]);
+    if (!terminalDivRef.current) return;
 
-  const handleCommand = (cmd: string) => {
-    setHistory(prev => [...prev, { type: 'input', content: `root@${server.name}:~$ ${cmd}` }]);
+    // ── Init xterm ──────────────────────────────────────────────────────────
+    const xterm = new XTerm({
+      cursorBlink:    true,
+      fontSize:       13,
+      fontFamily:     'JetBrains Mono, Consolas, monospace',
+      theme: {
+        background:   '#020617',
+        foreground:   '#e5e7eb',
+        cursor:       '#10b981',
+        selectionBackground: 'rgba(16,185,129,0.3)',
+        black:        '#1e293b',
+        red:          '#ef4444',
+        green:        '#10b981',
+        yellow:       '#f59e0b',
+        blue:         '#3b82f6',
+        magenta:      '#8b5cf6',
+        cyan:         '#06b6d4',
+        white:        '#f1f5f9',
+        brightBlack:  '#475569',
+        brightRed:    '#f87171',
+        brightGreen:  '#34d399',
+        brightYellow: '#fbbf24',
+        brightBlue:   '#60a5fa',
+        brightMagenta:'#a78bfa',
+        brightCyan:   '#22d3ee',
+        brightWhite:  '#ffffff',
+      },
+      scrollback:     1000,
+      allowProposedApi: true,
+    });
 
-    if (cmd.trim() === '') return;
+    const fitAddon      = new FitAddon();
+    const webLinksAddon = new WebLinksAddon();
+    xterm.loadAddon(fitAddon);
+    xterm.loadAddon(webLinksAddon);
+    xterm.open(terminalDivRef.current);
+    fitAddon.fit();
 
-    if (cmd === 'clear') {
-      setHistory([]);
-      return;
-    }
+    xtermRef.current    = xterm;
+    fitAddonRef.current = fitAddon;
 
-    if (cmd === 'exit') {
-      onClose();
-      return;
-    }
+    // ── Connexion WebSocket ─────────────────────────────────────────────────
+    xterm.writeln(`\x1b[36mConnecting to ${name} (${ip})...\x1b[0m`);
 
-    // Find matching command or show not found
-    const matchedCmd = mockCommands.find(mc => cmd.startsWith(mc.cmd));
-    const output = matchedCmd 
-      ? matchedCmd.output 
-      : `bash: ${cmd}: command not found`;
+    const ws = new WebSocket(`${WS_URL}/terminal/${id}`);
+    wsRef.current = ws;
 
-    setTimeout(() => {
-      setHistory(prev => [...prev, { type: 'output', content: output }]);
-    }, 100);
-  };
+    ws.onopen = () => {
+      setConnecting(false);
+      setConnected(true);
+      setError(null);
+      xterm.writeln(`\x1b[32m✓ Connected to ${name}\x1b[0m`);
+      xterm.writeln('');
+    };
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (input.trim()) {
-      handleCommand(input);
-      setInput('');
-    }
-  };
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'data') {
+          xterm.write(msg.data);
+        } else if (msg.type === 'error') {
+          xterm.writeln(`\x1b[31m${msg.data}\x1b[0m`);
+        }
+      } catch {
+        xterm.write(event.data);
+      }
+    };
+
+    ws.onclose = () => {
+      setConnected(false);
+      setConnecting(false);
+      xterm.writeln('\r\n\x1b[33mConnection closed.\x1b[0m');
+    };
+
+    ws.onerror = () => {
+      setConnected(false);
+      setConnecting(false);
+      setError('WebSocket connection failed');
+      xterm.writeln('\r\n\x1b[31m✗ Connection failed. Is the backend running?\x1b[0m');
+    };
+
+    // ── Envoyer les touches au backend ──────────────────────────────────────
+    xterm.onData((data) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'input', data }));
+      }
+    });
+
+    // ── Resize ──────────────────────────────────────────────────────────────
+    const handleResize = () => {
+      fitAddon.fit();
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'resize',
+          cols: xterm.cols,
+          rows: xterm.rows,
+        }));
+      }
+    };
+    window.addEventListener('resize', handleResize);
+
+    // Focus
+    xterm.focus();
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      ws.close();
+      xterm.dispose();
+    };
+  }, [id]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="glass-panel max-w-4xl w-full h-[600px] rounded-xl border border-[#1f2937] bg-[#020617]/80 flex flex-col shadow-2xl shadow-black/50">
+      <div
+        className="max-w-5xl w-full rounded-xl flex flex-col shadow-2xl"
+        style={{
+          background: '#020617',
+          border: '1px solid #1f2937',
+          height: '600px',
+        }}
+      >
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-[#1f2937] p-4">
+        <div className="flex items-center justify-between px-4 py-3 flex-shrink-0"
+          style={{ borderBottom: '1px solid #1f2937' }}>
           <div className="flex items-center gap-3">
-            <TerminalIcon className="text-[#16a34a]" size={20} />
-            <div>
-              <h3 className="font-semibold font-mono">{server.name}</h3>
-              <p className="text-xs text-[#94a3b8] font-mono">{server.ip}</p>
+            {/* macOS dots */}
+            <div className="flex gap-1.5">
+              <div className="w-3 h-3 rounded-full bg-[#ef4444] cursor-pointer" onClick={onClose} />
+              <div className="w-3 h-3 rounded-full bg-[#f59e0b]" />
+              <div className="w-3 h-3 rounded-full bg-[#22c55e]" />
             </div>
+            <TerminalIcon size={14} className="text-[#16a34a]" />
+            <span className="font-mono text-sm text-white">{name}</span>
+            <span className="font-mono text-xs text-[#475569]">{ip}</span>
           </div>
-          <button
-            onClick={onClose}
-            className="w-8 h-8 rounded-lg bg-[#2d3748] hover:bg-[#374151] flex items-center justify-center transition-all"
-          >
-            <X size={18} />
-          </button>
+
+          <div className="flex items-center gap-3">
+            {/* Status */}
+            {connecting && (
+              <span className="flex items-center gap-1.5 text-[11px] text-[#f59e0b] font-mono">
+                <Loader2 size={11} className="animate-spin" /> connecting...
+              </span>
+            )}
+            {connected && (
+              <span className="flex items-center gap-1.5 text-[11px] text-[#10b981] font-mono">
+                <Wifi size={11} /> connected
+              </span>
+            )}
+            {error && (
+              <span className="flex items-center gap-1.5 text-[11px] text-[#ef4444] font-mono">
+                <WifiOff size={11} /> {error}
+              </span>
+            )}
+            <button onClick={onClose}
+              className="w-7 h-7 rounded-lg flex items-center justify-center text-[#94a3b8] hover:text-white transition-colors"
+              style={{ background: '#1f2937' }}>
+              <X size={14} />
+            </button>
+          </div>
         </div>
 
-        {/* Terminal Content */}
+        {/* xterm container */}
         <div
-          ref={terminalRef}
-          className="scanlines flex-1 overflow-auto p-4 font-mono text-sm"
-          onClick={() => inputRef.current?.focus()}
-        >
-          {history.map((line, i) => (
-            <div
-              key={i}
-              className={`${
-                line.type === 'input' ? 'text-[#10b981]' : 'text-[#e5e7eb]'
-              } ${i >= history.length - 3 ? 'typewriter' : ''}`}
-            >
-              {line.content}
-            </div>
-          ))}
-          
-          {/* Input Line */}
-          <form onSubmit={handleSubmit} className="flex items-center text-[#16a34a]">
-            <span>root@{server.name}:~$&nbsp;</span>
-            <input
-              ref={inputRef}
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              className="flex-1 bg-transparent outline-none text-[#f1f5f9]"
-              autoFocus
-            />
-          </form>
-        </div>
+          ref={terminalDivRef}
+          className="flex-1 overflow-hidden"
+          style={{ padding: '8px' }}
+        />
 
         {/* Footer */}
-        <div className="p-3 border-t border-[#2d3748] text-xs text-[#94a3b8] font-mono">
-          <div className="flex gap-4">
-            <span>Try: ls -la | docker ps | df -h | free -h | clear | exit</span>
-          </div>
+        <div className="px-4 py-1.5 flex-shrink-0 font-mono text-[10px] text-[#334155]"
+          style={{ borderTop: '1px solid #1f2937' }}>
+          SSH shell — {name} · ctrl+c pour interrompre · exit pour fermer
         </div>
       </div>
     </div>
