@@ -18,17 +18,25 @@ app.use(express.json());
 // VPS STORE
 // ══════════════════════════════════════════════════════════════════════════════
 const VPS_FILE = './vps-store.json';
+
 function loadStore() {
-  try { if (fs.existsSync(VPS_FILE)) return JSON.parse(fs.readFileSync(VPS_FILE, 'utf8')); }
-  catch(e) { console.error('vps-store.json:', e.message); }
+  try {
+    if (fs.existsSync(VPS_FILE)) return JSON.parse(fs.readFileSync(VPS_FILE, 'utf8'));
+  } catch (e) {
+    console.error('vps-store.json:', e.message);
+  }
   return {};
 }
-function saveStore() { fs.writeFileSync(VPS_FILE, JSON.stringify(vpsStore, null, 2)); }
+
+function saveStore() {
+  fs.writeFileSync(VPS_FILE, JSON.stringify(vpsStore, null, 2));
+}
+
 let vpsStore = loadStore();
 console.log(`📦 VPS chargés : ${Object.keys(vpsStore).join(', ') || 'aucun'}`);
 
 // ══════════════════════════════════════════════════════════════════════════════
-// SQLITE — Historique des métriques
+// SQLITE — Historique des métriques + AUDIT LOG
 // ══════════════════════════════════════════════════════════════════════════════
 const db = new Database('./metrics-history.db');
 
@@ -54,16 +62,66 @@ db.exec(`
     total       INTEGER DEFAULT 0
   );
   CREATE INDEX IF NOT EXISTS idx_snapshots_vps_ts ON vps_snapshots(vps_id, timestamp);
+
+  CREATE TABLE IF NOT EXISTS latency_history (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    vps_id    TEXT    NOT NULL,
+    timestamp INTEGER NOT NULL,
+    url       TEXT    NOT NULL,
+    ms        INTEGER DEFAULT 0,
+    status    INTEGER DEFAULT 0,
+    ok        INTEGER DEFAULT 1
+  );
+  CREATE INDEX IF NOT EXISTS idx_latency_vps_ts ON latency_history(vps_id, timestamp);
+
+  CREATE TABLE IF NOT EXISTS audit_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp   INTEGER NOT NULL,
+    action      TEXT    NOT NULL,
+    category    TEXT    NOT NULL DEFAULT 'settings',
+    details     TEXT    DEFAULT '',
+    ip          TEXT    DEFAULT '',
+    success     INTEGER DEFAULT 1
+  );
+  CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(timestamp);
 `);
 
 // Nettoyage auto des données > 31 jours
 function cleanOldData() {
   const cutoff = Date.now() - 31 * 24 * 60 * 60 * 1000;
-  db.prepare('DELETE FROM metrics WHERE timestamp < ?').run(cutoff);
-  db.prepare('DELETE FROM vps_snapshots WHERE timestamp < ?').run(cutoff);
+  db.prepare('DELETE FROM metrics          WHERE timestamp < ?').run(cutoff);
+  db.prepare('DELETE FROM vps_snapshots    WHERE timestamp < ?').run(cutoff);
+  db.prepare('DELETE FROM latency_history  WHERE timestamp < ?').run(cutoff);
+  // Garder 90 jours pour l'audit log
+  const auditCutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
+  db.prepare('DELETE FROM audit_log        WHERE timestamp < ?').run(auditCutoff);
 }
-setInterval(cleanOldData, 60 * 60 * 1000); // toutes les heures
+setInterval(cleanOldData, 60 * 60 * 1000);
 cleanOldData();
+
+// ══════════════════════════════════════════════════════════════════════════════
+// AUDIT LOG HELPER
+// ══════════════════════════════════════════════════════════════════════════════
+const insertAudit = db.prepare(
+  'INSERT INTO audit_log (timestamp, action, category, details, ip, success) VALUES (?, ?, ?, ?, ?, ?)'
+);
+
+function auditLog({ action, category = 'settings', details = '', ip = '', success = 1 }) {
+  try {
+    insertAudit.run(Date.now(), action, category, details, ip, success ? 1 : 0);
+    console.log(`📋 Audit [${category}] ${action}${details ? ' — ' + details : ''}`);
+  } catch (e) {
+    console.error('auditLog error:', e.message);
+  }
+}
+
+function getClientIp(req) {
+  return (
+    req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
+    req.socket?.remoteAddress ||
+    'unknown'
+  );
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // SSH HELPER
@@ -75,13 +133,18 @@ function runSSH(vps, command) {
     conn.on('ready', () => {
       conn.exec(command, (err, stream) => {
         if (err) return reject(err);
-        stream.on('data', d => { output += d.toString(); });
+        stream.on('data',        d => { output += d.toString(); });
         stream.stderr.on('data', d => { output += d.toString(); });
         stream.on('close', () => { conn.end(); resolve(output.trim()); });
       });
     });
     conn.on('error', err => reject(err));
-    conn.connect({ host: vps.host, port: vps.port || 22, username: vps.username, password: vps.password });
+    conn.connect({
+      host:     vps.host,
+      port:     vps.port || 22,
+      username: vps.username,
+      password: vps.password,
+    });
   });
 }
 
@@ -94,16 +157,52 @@ function parseMem(s) {
 function detectLogLevel(msg) {
   const m = msg.toLowerCase();
   if (m.includes('error') || m.includes('fatal')) return 'error';
-  if (m.includes('warn')) return 'warn';
-  if (m.includes('debug')) return 'debug';
+  if (m.includes('warn'))                          return 'warn';
+  if (m.includes('debug'))                         return 'debug';
   return 'info';
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// COLLECTE AUTOMATIQUE DES MÉTRIQUES (toutes les 30s)
+// PING HTTP — mesure de latence toutes les 30s
 // ══════════════════════════════════════════════════════════════════════════════
-const insertMetric   = db.prepare('INSERT INTO metrics (vps_id, timestamp, container, cpu, mem_mb, mem_perc) VALUES (?, ?, ?, ?, ?, ?)');
-const insertSnapshot = db.prepare('INSERT INTO vps_snapshots (vps_id, timestamp, total_cpu, total_mem, running, total) VALUES (?, ?, ?, ?, ?, ?)');
+function pingHttp(host) {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const req = http.get(`http://${host}`, { timeout: 5000 }, (res) => {
+      const ms = Date.now() - start;
+      res.resume();
+      resolve({ ms, status: res.statusCode, ok: 1 });
+    });
+    req.on('timeout', () => { req.destroy(); resolve({ ms: 5000, status: 0, ok: 0 }); });
+    req.on('error',   () => { resolve({ ms: Date.now() - start, status: 0, ok: 0 }); });
+  });
+}
+
+const insertLatency = db.prepare(
+  'INSERT INTO latency_history (vps_id, timestamp, url, ms, status, ok) VALUES (?, ?, ?, ?, ?, ?)'
+);
+
+async function collectLatency(vpsId) {
+  const vps = vpsStore[vpsId];
+  if (!vps) return;
+  try {
+    const { ms, status, ok } = await pingHttp(vps.host);
+    insertLatency.run(vpsId, Date.now(), `http://${vps.host}`, ms, status, ok);
+    console.log(`🌐 Latence [${vpsId}] → ${ok ? ms + 'ms' : 'timeout'} (HTTP ${status})`);
+  } catch (err) {
+    console.error(`❌ collectLatency [${vpsId}]:`, err.message);
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// COLLECTE MÉTRIQUES DOCKER (toutes les 30s)
+// ══════════════════════════════════════════════════════════════════════════════
+const insertMetric   = db.prepare(
+  'INSERT INTO metrics (vps_id, timestamp, container, cpu, mem_mb, mem_perc) VALUES (?, ?, ?, ?, ?, ?)'
+);
+const insertSnapshot = db.prepare(
+  'INSERT INTO vps_snapshots (vps_id, timestamp, total_cpu, total_mem, running, total) VALUES (?, ?, ?, ?, ?, ?)'
+);
 
 async function collectMetrics(vpsId) {
   const vps = vpsStore[vpsId];
@@ -119,40 +218,82 @@ async function collectMetrics(vpsId) {
       return { name, cpu: parseCpu(cpu), mem: parseMem(mem), memPerc: parseCpu(memPerc) };
     });
 
-    const ps      = psRaw.split('\n').filter(Boolean).map(line => {
+    const ps = psRaw.split('\n').filter(Boolean).map(line => {
       const idx = line.indexOf('|');
       return { name: line.slice(0, idx).trim(), status: line.slice(idx + 1).trim() };
     });
 
-    const now     = Date.now();
-    const running = ps.filter(p => p.status.includes('Up')).length;
-    const total   = ps.length;
+    const now      = Date.now();
+    const running  = ps.filter(p => p.status.includes('Up')).length;
+    const total    = ps.length;
     const totalCpu = containers.reduce((s, c) => s + c.cpu, 0) / Math.max(1, containers.length);
     const totalMem = containers.reduce((s, c) => s + c.mem, 0);
 
-    // Transaction pour insérer tout d'un coup
-    const insertAll = db.transaction(() => {
-      containers.forEach(c => {
-        insertMetric.run(vpsId, now, c.name, c.cpu, c.mem, c.memPerc);
-      });
+    db.transaction(() => {
+      containers.forEach(c => insertMetric.run(vpsId, now, c.name, c.cpu, c.mem, c.memPerc));
       insertSnapshot.run(vpsId, now, totalCpu, totalMem, running, total);
-    });
-    insertAll();
-
-  } catch (err) {
-    // Silencieux — le VPS peut être temporairement inaccessible
+    })();
+  } catch {
+    // Silencieux — VPS temporairement inaccessible
   }
 }
 
 async function collectAll() {
-  for (const vpsId of Object.keys(vpsStore)) {
-    await collectMetrics(vpsId);
-  }
+  await Promise.all(
+    Object.keys(vpsStore).map(id =>
+      Promise.all([collectMetrics(id), collectLatency(id)])
+    )
+  );
 }
 
-// Collecte immédiate + toutes les 30s
 collectAll();
 setInterval(collectAll, 30 * 1000);
+
+// ══════════════════════════════════════════════════════════════════════════════
+// UTILITAIRES — plages de temps & regroupement
+// ══════════════════════════════════════════════════════════════════════════════
+function rangeToMs(range) {
+  const map = {
+    '1h':  3_600_000,
+    '6h':  21_600_000,
+    '12h': 43_200_000,
+    '24h': 86_400_000,
+    '7d':  604_800_000,
+    '30d': 2_592_000_000,
+  };
+  return map[range] || 86_400_000;
+}
+
+function intervalForRange(rangeMs) {
+  if (rangeMs <=  3_600_000) return     60_000;
+  if (rangeMs <= 21_600_000) return    300_000;
+  if (rangeMs <= 86_400_000) return    900_000;
+  if (rangeMs <=604_800_000) return  3_600_000;
+  return                              7_200_000;
+}
+
+function groupDataByInterval(rows, rangeMs) {
+  if (!rows.length) return [];
+  const intervalMs = intervalForRange(rangeMs);
+
+  const buckets = {};
+  rows.forEach(row => {
+    const key = Math.floor(row.timestamp / intervalMs) * intervalMs;
+    (buckets[key] ??= []).push(row);
+  });
+
+  return Object.entries(buckets)
+    .sort(([a], [b]) => Number(a) - Number(b))
+    .map(([ts, items]) => {
+      const time     = new Date(Number(ts));
+      const longRange = rangeMs >= 604_800_000;
+      const label    = longRange
+        ? time.toLocaleDateString('fr', { month: 'short', day: 'numeric' })
+            + ' ' + time.toLocaleTimeString('fr', { hour: '2-digit', minute: '2-digit' })
+        : time.toLocaleTimeString('fr', { hour: '2-digit', minute: '2-digit' });
+      return { time: label, items };
+    });
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // ROUTES VPS
@@ -162,9 +303,11 @@ app.post('/api/vps', (req, res) => {
   const { id, name, host, username, password, port } = req.body;
   if (!id || !host || !username || !password)
     return res.status(400).json({ error: 'Requis : id, host, username, password' });
+
   vpsStore[id] = { id, name: name || id, host, port: port || 22, username, password };
   saveStore();
-  collectMetrics(id); // Collecter immédiatement
+  Promise.all([collectMetrics(id), collectLatency(id)]);
+  auditLog({ action: 'VPS added', category: 'vps', details: `${id} (${username}@${host})`, ip: getClientIp(req) });
   console.log(`✅ VPS "${id}" enregistré : ${username}@${host}`);
   res.json({ message: 'VPS ajouté', vps: { id, name, host } });
 });
@@ -175,6 +318,7 @@ app.get('/api/vps', (req, res) => {
 
 app.delete('/api/vps/:id', (req, res) => {
   if (!vpsStore[req.params.id]) return res.status(404).json({ error: 'VPS introuvable' });
+  auditLog({ action: 'VPS removed', category: 'vps', details: req.params.id, ip: getClientIp(req) });
   delete vpsStore[req.params.id];
   saveStore();
   res.json({ ok: true });
@@ -186,7 +330,9 @@ app.post('/api/vps/:id/test', async (req, res) => {
   try {
     const out = await runSSH(vps, 'echo ok && hostname && uptime');
     res.json({ ok: true, output: out });
-  } catch (err) { res.status(503).json({ ok: false, error: err.message }); }
+  } catch (err) {
+    res.status(503).json({ ok: false, error: err.message });
+  }
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -201,109 +347,74 @@ app.get('/api/metrics/:id', async (req, res) => {
       runSSH(vps, "docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}'"),
       runSSH(vps, "docker ps --format '{{.Names}}|{{.Status}}'"),
     ]);
-    const containers = statsRaw.split('\n').filter(Boolean).map(line => {
-      const [name, cpu, mem, memPerc] = line.split('|').map(s => s.trim());
-      return { name, cpu, mem, memPerc };
-    });
+
     const ps = psRaw.split('\n').filter(Boolean).map(line => {
       const idx = line.indexOf('|');
       return { name: line.slice(0, idx).trim(), status: line.slice(idx + 1).trim() };
     });
-    containers.forEach(c => { c.status = ps.find(p => p.name === c.name)?.status || 'unknown'; });
+
+    const containers = statsRaw.split('\n').filter(Boolean).map(line => {
+      const [name, cpu, mem, memPerc] = line.split('|').map(s => s.trim());
+      return { name, cpu, mem, memPerc, status: ps.find(p => p.name === name)?.status || 'unknown' };
+    });
+
     res.json({ vps: { id: vps.id, name: vps.name, host: vps.host }, containers, ps, timestamp: new Date().toISOString() });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
-// HISTORIQUE MÉTRIQUES (pour les graphiques avec plage de temps)
+// HISTORIQUE CPU
 // ══════════════════════════════════════════════════════════════════════════════
 
-// Conversion plage de temps en millisecondes
-function rangeToMs(range) {
-  const map = { '1h': 3600000, '6h': 21600000, '12h': 43200000, '24h': 86400000, '7d': 604800000, '30d': 2592000000 };
-  return map[range] || 86400000;
-}
-
-// Grouper les données par intervalle de temps
-function groupDataByInterval(rows, rangeMs) {
-  if (!rows.length) return [];
-  
-  // Choisir l'intervalle selon la plage
-  let intervalMs;
-  if (rangeMs <= 3600000)       intervalMs = 60000;      // 1h  → par minute
-  else if (rangeMs <= 21600000) intervalMs = 300000;     // 6h  → par 5 min
-  else if (rangeMs <= 86400000) intervalMs = 900000;     // 24h → par 15 min
-  else if (rangeMs <= 604800000)intervalMs = 3600000;    // 7d  → par heure
-  else                          intervalMs = 7200000;    // 30d → par 2h
-
-  const buckets = {};
-  rows.forEach(row => {
-    const bucket = Math.floor(row.timestamp / intervalMs) * intervalMs;
-    if (!buckets[bucket]) buckets[bucket] = [];
-    buckets[bucket].push(row);
-  });
-
-  return Object.entries(buckets)
-    .sort(([a], [b]) => Number(a) - Number(b))
-    .map(([ts, items]) => {
-      const time = new Date(Number(ts));
-      const rangeDay = rangeMs >= 604800000;
-      const label = rangeDay
-        ? time.toLocaleDateString('fr', { month: 'short', day: 'numeric' }) + ' ' + time.toLocaleTimeString('fr', { hour: '2-digit', minute: '2-digit' })
-        : time.toLocaleTimeString('fr', { hour: '2-digit', minute: '2-digit' });
-      return { time: label, items };
-    });
-}
-
-// GET /api/history/:id/cpu?range=24h
 app.get('/api/history/:id/cpu', (req, res) => {
-  const { id } = req.params;
-  const range   = req.query.range || '24h';
-  const rangeMs = rangeToMs(range);
+  const { id }  = req.params;
+  const rangeMs = rangeToMs(req.query.range || '24h');
   const since   = Date.now() - rangeMs;
 
   const rows = db.prepare(`
-    SELECT timestamp, container, cpu 
-    FROM metrics 
-    WHERE vps_id = ? AND timestamp >= ?
-    ORDER BY timestamp ASC
+    SELECT timestamp, container, cpu
+    FROM   metrics
+    WHERE  vps_id = ? AND timestamp >= ?
+    ORDER  BY timestamp ASC
   `).all(id, since);
 
   if (!rows.length) return res.json({ points: [], containers: [] });
 
-  // Récupérer les containers uniques
+  const shortName  = s => s.replace(/mypresc-(staging|production|dev)-/, '');
   const containers = [...new Set(rows.map(r => r.container))];
-
-  // Grouper par intervalle
-  const grouped = groupDataByInterval(rows, rangeMs);
+  const grouped    = groupDataByInterval(rows, rangeMs);
 
   const points = grouped.map(({ time, items }) => {
     const point = { time };
     containers.forEach(c => {
       const cItems = items.filter(i => i.container === c);
-      point[c.replace(/mypresc-(staging|production|dev)-/, '')] = cItems.length
+      point[shortName(c)] = cItems.length
         ? Math.round(cItems.reduce((s, i) => s + i.cpu, 0) / cItems.length * 10) / 10
         : 0;
     });
     return point;
   });
 
-  res.json({ points, containers: containers.map(c => c.replace(/mypresc-(staging|production|dev)-/, '')) });
+  res.json({ points, containers: containers.map(shortName) });
 });
 
-// GET /api/history/:id/memory?range=24h
+// ══════════════════════════════════════════════════════════════════════════════
+// HISTORIQUE MÉMOIRE
+// ══════════════════════════════════════════════════════════════════════════════
+
 app.get('/api/history/:id/memory', (req, res) => {
-  const { id } = req.params;
-  const range   = req.query.range || '24h';
-  const rangeMs = rangeToMs(range);
+  const { id }  = req.params;
+  const rangeMs = rangeToMs(req.query.range || '24h');
   const since   = Date.now() - rangeMs;
 
   const rows = db.prepare(`
-    SELECT timestamp, SUM(mem_mb) as total_mem
-    FROM metrics
-    WHERE vps_id = ? AND timestamp >= ?
-    GROUP BY timestamp
-    ORDER BY timestamp ASC
+    SELECT timestamp, SUM(mem_mb) AS total_mem
+    FROM   metrics
+    WHERE  vps_id = ? AND timestamp >= ?
+    GROUP  BY timestamp
+    ORDER  BY timestamp ASC
   `).all(id, since);
 
   if (!rows.length) return res.json({ points: [] });
@@ -318,6 +429,90 @@ app.get('/api/history/:id/memory', (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
+// HISTORIQUE LATENCE HTTP
+// ══════════════════════════════════════════════════════════════════════════════
+
+app.get('/api/history/:id/latency', (req, res) => {
+  const { id }  = req.params;
+  const rangeMs = rangeToMs(req.query.range || '24h');
+  const since   = Date.now() - rangeMs;
+
+  const rows = db.prepare(`
+    SELECT timestamp, ms, status, ok
+    FROM   latency_history
+    WHERE  vps_id = ? AND timestamp >= ?
+    ORDER  BY timestamp ASC
+  `).all(id, since);
+
+  if (!rows.length) return res.json({ points: [], avg: 0, p95: 0, uptime: 100 });
+
+  const grouped = groupDataByInterval(rows, rangeMs);
+  const points  = grouped.map(({ time, items }) => {
+    const okItems = items.filter(i => i.ok);
+    return {
+      time,
+      ms: okItems.length
+        ? Math.round(okItems.reduce((s, i) => s + i.ms, 0) / okItems.length)
+        : null,
+      ok: okItems.length > 0,
+    };
+  });
+
+  const allMs  = rows.filter(r => r.ok).map(r => r.ms).sort((a, b) => a - b);
+  const avg    = allMs.length ? Math.round(allMs.reduce((s, v) => s + v, 0) / allMs.length) : 0;
+  const p95    = allMs.length ? allMs[Math.floor(allMs.length * 0.95)] ?? 0 : 0;
+  const uptime = rows.length  ? Math.round(rows.filter(r => r.ok).length / rows.length * 1000) / 10 : 100;
+
+  res.json({ points, avg, p95, uptime });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// LATENCE LIVE + historique 1h
+// ══════════════════════════════════════════════════════════════════════════════
+
+app.get('/api/response-time/:id', async (req, res) => {
+  const vps = vpsStore[req.params.id];
+  if (!vps) return res.status(404).json({ error: 'VPS non trouvé' });
+
+  const [live, rows] = await Promise.all([
+    pingHttp(vps.host),
+    Promise.resolve(
+      db.prepare(
+        'SELECT timestamp, ms, ok FROM latency_history WHERE vps_id = ? AND timestamp >= ? ORDER BY timestamp ASC'
+      ).all(req.params.id, Date.now() - 3_600_000)
+    ),
+  ]);
+
+  insertLatency.run(req.params.id, Date.now(), `http://${vps.host}`, live.ms, live.status, live.ok);
+
+  const allMs = rows.filter(r => r.ok).map(r => r.ms).sort((a, b) => a - b);
+  const avg   = allMs.length ? Math.round(allMs.reduce((s, v) => s + v, 0) / allMs.length) : live.ms;
+  const p95   = allMs.length ? allMs[Math.floor(allMs.length * 0.95)] ?? 0 : live.ms;
+
+  const buckets = {};
+  rows.forEach(r => {
+    const d = new Date(r.timestamp);
+    d.setSeconds(0, 0);
+    d.setMinutes(Math.floor(d.getMinutes() / 5) * 5);
+    const key = d.toISOString();
+    (buckets[key] ??= []).push(r);
+  });
+
+  const points = Object.entries(buckets)
+    .sort(([a], [b]) => new Date(a) - new Date(b))
+    .map(([t, items]) => {
+      const vals = items.filter(i => i.ok).map(i => i.ms).sort((a, b) => a - b);
+      return {
+        time: new Date(t).toLocaleTimeString('fr', { hour: '2-digit', minute: '2-digit' }),
+        avg:  vals.length ? Math.round(vals.reduce((s, v) => s + v, 0) / vals.length) : null,
+        p95:  vals.length ? vals[Math.floor(vals.length * 0.95)] ?? null : null,
+      };
+    });
+
+  res.json({ current: live, avg, p95, points });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
 // LOGS
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -326,96 +521,52 @@ app.get('/api/logs/:id', async (req, res) => {
   if (!vps) return res.status(404).json({ error: 'VPS non trouvé' });
   const lines = parseInt(req.query.lines) || 50;
   try {
-    const psRaw = await runSSH(vps, "docker ps --format '{{.Names}}'");
-    const names = psRaw.split('\n').filter(Boolean);
+    const psRaw  = await runSSH(vps, "docker ps --format '{{.Names}}'");
+    const names  = psRaw.split('\n').filter(Boolean);
     const results = await Promise.all(names.map(async name => {
       try {
         const raw = await runSSH(vps, `docker logs --tail ${lines} --timestamps ${name} 2>&1`);
         return raw.split('\n').filter(Boolean).map(line => {
           const m = line.match(/^(\S+)\s+(.+)$/);
-          return { container: name, timestamp: m?.[1] || new Date().toISOString(), message: m?.[2] || line, level: detectLogLevel(m?.[2] || line) };
+          return {
+            container: name,
+            timestamp: m?.[1] || new Date().toISOString(),
+            message:   m?.[2] || line,
+            level:     detectLogLevel(m?.[2] || line),
+          };
         });
       } catch { return []; }
     }));
-    res.json({ logs: results.flat().sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)).slice(0, 200), timestamp: new Date().toISOString() });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    res.json({
+      logs: results.flat()
+        .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+        .slice(0, 200),
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get('/api/logs/:id/:container', async (req, res) => {
   const vps = vpsStore[req.params.id];
   if (!vps) return res.status(404).json({ error: 'VPS non trouvé' });
   try {
-    const raw = await runSSH(vps, `docker logs --tail ${parseInt(req.query.lines) || 100} --timestamps ${req.params.container} 2>&1`);
+    const raw  = await runSSH(vps, `docker logs --tail ${parseInt(req.query.lines) || 100} --timestamps ${req.params.container} 2>&1`);
     const logs = raw.split('\n').filter(Boolean).map(line => {
       const m = line.match(/^(\S+)\s+(.+)$/);
-      return { container: req.params.container, timestamp: m?.[1] || new Date().toISOString(), message: m?.[2] || line, level: detectLogLevel(m?.[2] || line) };
+      return {
+        container: req.params.container,
+        timestamp: m?.[1] || new Date().toISOString(),
+        message:   m?.[2] || line,
+        level:     detectLogLevel(m?.[2] || line),
+      };
     });
     res.json({ logs, container: req.params.container });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
-
-// ══════════════════════════════════════════════════════════════════════════════
-// RESPONSE TIME + REQUESTS
-// ══════════════════════════════════════════════════════════════════════════════
-
-app.get('/api/response-time/:id', async (req, res) => {
-  const vps = vpsStore[req.params.id];
-  if (!vps) return res.status(404).json({ error: 'VPS non trouvé' });
-  try {
-    const psRaw = await runSSH(vps, "docker ps --format '{{.Names}}' | grep -i nginx");
-    const nginxName = psRaw.split('\n')[0].trim();
-    if (!nginxName) return res.json({ points: [], avg: 0, p95: 0 });
-    const raw = await runSSH(vps, `docker logs --tail 500 --timestamps ${nginxName} 2>&1`);
-    const points = [];
-    raw.split('\n').filter(Boolean).forEach(line => {
-      const tm = line.match(/(\d+\.\d+)$/), ts = line.match(/^(\S+)/);
-      if (tm && ts) points.push({ timestamp: ts[1], ms: Math.round(parseFloat(tm[1]) * 1000) });
-    });
-    if (!points.length) return res.json({ points: [], avg: 0, p95: 0 });
-    const sorted = [...points.map(p => p.ms)].sort((a, b) => a - b);
-    res.json({ points: groupByMinutes(points, 5), avg: Math.round(sorted.reduce((s, v) => s + v, 0) / sorted.length), p95: sorted[Math.floor(sorted.length * 0.95)] || 0 });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-app.get('/api/requests/:id', async (req, res) => {
-  const vps = vpsStore[req.params.id];
-  if (!vps) return res.status(404).json({ error: 'VPS non trouvé' });
-  try {
-    const psRaw = await runSSH(vps, "docker ps --format '{{.Names}}' | grep -i nginx");
-    const nginxName = psRaw.split('\n')[0].trim();
-    if (!nginxName) return res.json({ points: [], current_rpm: 0 });
-    const raw = await runSSH(vps, `docker logs --since 1h --timestamps ${nginxName} 2>&1`);
-    const lines = raw.split('\n').filter(Boolean);
-    const buckets = {};
-    lines.forEach(line => {
-      const m = line.match(/^(\S+)/);
-      if (!m) return;
-      const d = new Date(m[1]); if (isNaN(d)) return;
-      d.setSeconds(0, 0);
-      buckets[d.toISOString()] = (buckets[d.toISOString()] || 0) + 1;
-    });
-    const points = Object.entries(buckets).sort(([a],[b]) => new Date(a)-new Date(b))
-      .map(([t, c]) => ({ time: new Date(t).toLocaleTimeString('fr',{hour:'2-digit',minute:'2-digit'}), count: c }));
-    const last5 = points.slice(-5);
-    res.json({ points, current_rpm: last5.length ? Math.round(last5.reduce((s,p)=>s+p.count,0)/last5.length) : 0, total_1h: lines.length });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-function groupByMinutes(points, intervalMin) {
-  const buckets = {};
-  points.forEach(p => {
-    const d = new Date(p.timestamp); d.setSeconds(0,0);
-    d.setMinutes(Math.floor(d.getMinutes()/intervalMin)*intervalMin);
-    const key = d.toISOString();
-    if (!buckets[key]) buckets[key] = [];
-    buckets[key].push(p.ms);
-  });
-  return Object.entries(buckets).sort(([a],[b])=>new Date(a)-new Date(b)).map(([t,vals])=>({
-    time: new Date(t).toLocaleTimeString('fr',{hour:'2-digit',minute:'2-digit'}),
-    avg: Math.round(vals.reduce((s,v)=>s+v,0)/vals.length),
-    p95: vals.sort((a,b)=>a-b)[Math.floor(vals.length*0.95)]||0,
-  }));
-}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // ALERTES
@@ -429,24 +580,54 @@ app.get('/api/alerts/:id', async (req, res) => {
       runSSH(vps, "docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}'"),
       runSSH(vps, "docker ps --format '{{.Names}}|{{.Status}}'"),
     ]);
+
     const containers = statsRaw.split('\n').filter(Boolean).map(line => {
-      const [name,cpu,mem,memPerc] = line.split('|').map(s=>s.trim()); return {name,cpu,mem,memPerc};
+      const [name, cpu, mem, memPerc] = line.split('|').map(s => s.trim());
+      return { name, cpu, mem, memPerc };
     });
     const ps = psRaw.split('\n').filter(Boolean).map(line => {
-      const idx = line.indexOf('|'); return {name:line.slice(0,idx).trim(),status:line.slice(idx+1).trim()};
+      const idx = line.indexOf('|');
+      return { name: line.slice(0, idx).trim(), status: line.slice(idx + 1).trim() };
     });
-    const alerts = [], now = new Date().toISOString();
+
+    const alerts = [];
+    const now    = new Date().toISOString();
+    const short  = s => s.replace(/mypresc-(staging|production|dev)-/, '');
+
     containers.forEach(c => {
-      const short=c.name.replace(/mypresc-(staging|production|dev)-/,''), cpu=parseCpu(c.cpu), mem=parseCpu(c.memPerc), memUsed=c.mem.split('/')[0].trim();
-      if(cpu>80)     alerts.push({id:`cpu-c-${c.name}`,type:'critical',title:`${short} CPU Critical`,message:`CPU at ${cpu.toFixed(1)}%`,container:short,value:cpu,timestamp:now});
-      else if(cpu>50)alerts.push({id:`cpu-w-${c.name}`,type:'warning', title:`${short} CPU High`,    message:`CPU at ${cpu.toFixed(1)}%`,container:short,value:cpu,timestamp:now});
-      if(mem>85)     alerts.push({id:`mem-c-${c.name}`,type:'critical',title:`${short} Memory Critical`,message:`Memory at ${mem.toFixed(1)}% (${memUsed})`,container:short,value:mem,timestamp:now});
-      else if(mem>70)alerts.push({id:`mem-w-${c.name}`,type:'warning', title:`${short} Memory Warning`, message:`Memory at ${mem.toFixed(1)}% (${memUsed})`,container:short,value:mem,timestamp:now});
+      const s       = short(c.name);
+      const cpu     = parseCpu(c.cpu);
+      const mem     = parseCpu(c.memPerc);
+      const memUsed = c.mem.split('/')[0].trim();
+
+      if      (cpu > 80) alerts.push({ id: `cpu-c-${c.name}`, type: 'critical', title: `${s} CPU Critical`,    message: `CPU at ${cpu.toFixed(1)}%`,                 container: s, value: cpu, timestamp: now });
+      else if (cpu > 50) alerts.push({ id: `cpu-w-${c.name}`, type: 'warning',  title: `${s} CPU High`,        message: `CPU at ${cpu.toFixed(1)}%`,                 container: s, value: cpu, timestamp: now });
+      if      (mem > 85) alerts.push({ id: `mem-c-${c.name}`, type: 'critical', title: `${s} Memory Critical`, message: `Memory at ${mem.toFixed(1)}% (${memUsed})`, container: s, value: mem, timestamp: now });
+      else if (mem > 70) alerts.push({ id: `mem-w-${c.name}`, type: 'warning',  title: `${s} Memory Warning`,  message: `Memory at ${mem.toFixed(1)}% (${memUsed})`, container: s, value: mem, timestamp: now });
     });
-    ps.forEach(p=>{ if(!p.status.includes('Up')){const s=p.name.replace(/mypresc-(staging|production|dev)-/,'');alerts.push({id:`down-${p.name}`,type:'critical',title:`${s} Down`,message:`Status: ${p.status}`,container:s,value:0,timestamp:now});}});
-    res.json({alerts,count:alerts.length,critical:alerts.filter(a=>a.type==='critical').length,warning:alerts.filter(a=>a.type==='warning').length,timestamp:now});
-  } catch (err) { res.status(500).json({ error: err.message }); }
+
+    ps.forEach(p => {
+      if (!p.status.includes('Up')) {
+        const s = short(p.name);
+        alerts.push({ id: `down-${p.name}`, type: 'critical', title: `${s} Down`, message: `Status: ${p.status}`, container: s, value: 0, timestamp: now });
+      }
+    });
+
+    res.json({
+      alerts,
+      count:     alerts.length,
+      critical:  alerts.filter(a => a.type === 'critical').length,
+      warning:   alerts.filter(a => a.type === 'warning').length,
+      timestamp: now,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
+
+
+
+
 
 // ══════════════════════════════════════════════════════════════════════════════
 // WEBSOCKET TERMINAL SSH
@@ -456,41 +637,356 @@ const wssById = new WebSocketServer({ noServer: true });
 server.on('upgrade', (request, socket, head) => {
   const match = request.url.match(/^\/terminal\/(.+)$/);
   if (match) {
-    wssById.handleUpgrade(request, socket, head, (ws) => {
-      wssById.emit('connection', ws, request, match[1]);
-    });
+    wssById.handleUpgrade(request, socket, head, ws => wssById.emit('connection', ws, request, match[1]));
   } else {
     socket.destroy();
   }
 });
 
-wssById.on('connection', (ws, request, vpsId) => {
+wssById.on('connection', (ws, _request, vpsId) => {
   const vps = vpsStore[vpsId];
-  if (!vps) { ws.send(JSON.stringify({ type: 'error', data: `VPS "${vpsId}" introuvable` })); ws.close(); return; }
+  if (!vps) {
+    ws.send(JSON.stringify({ type: 'error', data: `VPS "${vpsId}" introuvable` }));
+    ws.close();
+    return;
+  }
+
   console.log(`🔌 Terminal SSH → ${vps.username}@${vps.host}`);
+  auditLog({ action: 'SSH terminal opened', category: 'ssh', details: `VPS: ${vpsId}` });
+
   const conn = new Client();
   let stream = null;
+
   conn.on('ready', () => {
     conn.shell({ term: 'xterm-256color', cols: 220, rows: 50 }, (err, s) => {
-      if (err) { ws.send(JSON.stringify({ type: 'error', data: err.message })); ws.close(); return; }
+      if (err) {
+        ws.send(JSON.stringify({ type: 'error', data: err.message }));
+        ws.close();
+        return;
+      }
       stream = s;
-      stream.on('data', d => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'data', data: d.toString() })); });
+      stream.on('data',        d => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'data', data: d.toString() })); });
       stream.stderr.on('data', d => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'data', data: d.toString() })); });
       stream.on('close', () => { conn.end(); if (ws.readyState === ws.OPEN) ws.close(); });
     });
   });
-  conn.on('error', err => { ws.send(JSON.stringify({ type: 'error', data: `SSH: ${err.message}` })); ws.close(); });
+
+  conn.on('error', err => {
+    auditLog({ action: 'SSH terminal error', category: 'ssh', details: err.message, success: 0 });
+    ws.send(JSON.stringify({ type: 'error', data: `SSH: ${err.message}` }));
+    ws.close();
+  });
+
   ws.on('message', msg => {
     try {
       const data = JSON.parse(msg.toString());
       if (!stream) return;
-      if (data.type === 'input') stream.write(data.data);
+      if      (data.type === 'input')  stream.write(data.data);
       else if (data.type === 'resize') stream.setWindow(data.rows, data.cols, 0, 0);
-    } catch {}
+    } catch { /* JSON malformé, on ignore */ }
   });
-  ws.on('close', () => { if (stream) stream.close(); conn.end(); });
-  conn.connect({ host: vps.host, port: vps.port || 22, username: vps.username, password: vps.password, readyTimeout: 15000 });
+
+  ws.on('close', () => { stream?.close(); conn.end(); });
+
+  conn.connect({
+    host:         vps.host,
+    port:         vps.port || 22,
+    username:     vps.username,
+    password:     vps.password,
+    readyTimeout: 15_000,
+  });
 });
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SETTINGS — Persistence in settings.json
+// ══════════════════════════════════════════════════════════════════════════════
+const SETTINGS_FILE = './settings.json';
+const crypto = require('crypto');
+
+function loadSettings() {
+  try {
+    if (fs.existsSync(SETTINGS_FILE)) {
+      return JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'));
+    }
+  } catch (e) {
+    console.error('[settings] Failed to load settings.json:', e.message);
+  }
+  return defaultSettings();
+}
+
+function defaultSettings() {
+  return {
+    discordWebhook: '',
+    slackWebhook:   '',
+    notifyDeploy:   true,
+    notifyFailure:  true,
+    notifyRollback: true,
+    apiToken:       crypto.randomBytes(32).toString('hex'),
+    sshAccess:      true,
+  };
+}
+
+function saveSettings(s) {
+  try {
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(s, null, 2));
+  } catch (e) {
+    console.error('[settings] Failed to write settings.json:', e.message);
+    throw e;
+  }
+}
+
+let appSettings = loadSettings();
+
+// ── GET /api/settings ─────────────────────────────────────────────────────
+app.get('/api/settings', (req, res) => {
+  res.json({
+    discordWebhook: appSettings.discordWebhook ? '***' : '',
+    slackWebhook:   appSettings.slackWebhook   ? '***' : '',
+    notifyDeploy:   appSettings.notifyDeploy,
+    notifyFailure:  appSettings.notifyFailure,
+    notifyRollback: appSettings.notifyRollback,
+    apiToken:       appSettings.apiToken,
+    sshAccess:      appSettings.sshAccess,
+  });
+});
+
+// ── POST /api/settings ────────────────────────────────────────────────────
+app.post('/api/settings', (req, res) => {
+  try {
+    const { discordWebhook, slackWebhook, notifyDeploy, notifyFailure, notifyRollback, sshAccess } = req.body;
+    const changes = [];
+
+    if (discordWebhook && discordWebhook !== '***') {
+      appSettings.discordWebhook = discordWebhook;
+      changes.push('Discord webhook updated');
+    }
+    if (slackWebhook && slackWebhook !== '***') {
+      appSettings.slackWebhook = slackWebhook;
+      changes.push('Slack webhook updated');
+    }
+
+    if (notifyDeploy   !== undefined) {
+      if (appSettings.notifyDeploy !== Boolean(notifyDeploy)) changes.push(`notifyDeploy → ${notifyDeploy}`);
+      appSettings.notifyDeploy   = Boolean(notifyDeploy);
+    }
+    if (notifyFailure  !== undefined) {
+      if (appSettings.notifyFailure !== Boolean(notifyFailure)) changes.push(`notifyFailure → ${notifyFailure}`);
+      appSettings.notifyFailure  = Boolean(notifyFailure);
+    }
+    if (notifyRollback !== undefined) {
+      if (appSettings.notifyRollback !== Boolean(notifyRollback)) changes.push(`notifyRollback → ${notifyRollback}`);
+      appSettings.notifyRollback = Boolean(notifyRollback);
+    }
+    if (sshAccess      !== undefined) {
+      if (appSettings.sshAccess !== Boolean(sshAccess)) changes.push(`sshAccess → ${sshAccess}`);
+      appSettings.sshAccess      = Boolean(sshAccess);
+    }
+
+    saveSettings(appSettings);
+
+    // ── AUDIT LOG ──
+    auditLog({
+      action:  'Settings saved',
+      category: 'settings',
+      details:  changes.length ? changes.join(', ') : 'no changes',
+      ip:       getClientIp(req),
+    });
+
+    console.log('[settings] ✅ Settings saved');
+    res.json({ ok: true });
+  } catch (e) {
+    auditLog({ action: 'Settings save failed', category: 'settings', details: e.message, ip: getClientIp(req), success: 0 });
+    console.error('[settings] Save error:', e.message);
+    res.status(500).json({ ok: false, error: 'Failed to save settings' });
+  }
+});
+
+// ── POST /api/settings/test-discord ──────────────────────────────────────
+app.post('/api/settings/test-discord', async (req, res) => {
+  const webhook = (req.body.webhook && req.body.webhook !== '***')
+    ? req.body.webhook
+    : appSettings.discordWebhook;
+
+  if (!webhook) {
+    return res.status(400).json({ ok: false, error: 'Discord webhook not configured' });
+  }
+
+  try {
+    const { default: fetch } = await import('node-fetch');
+    const r = await fetch(webhook, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        embeds: [{
+          title: '✅ MyPresc Deploy — Test Notification',
+          description: 'Discord webhook connected successfully!',
+          color: 0x06b6d4,
+          timestamp: new Date().toISOString(),
+          footer: { text: 'MyPresc Deploy' },
+        }],
+      }),
+    });
+
+    if (!r.ok) {
+      const text = await r.text().catch(() => '');
+      throw new Error(`Discord returned ${r.status}: ${text}`);
+    }
+
+    auditLog({ action: 'Discord test sent', category: 'integration', ip: getClientIp(req) });
+    console.log('[settings] ✅ Discord test message sent');
+    res.json({ ok: true, message: 'Message sent to Discord!' });
+  } catch (err) {
+    auditLog({ action: 'Discord test failed', category: 'integration', details: err.message, ip: getClientIp(req), success: 0 });
+    console.error('[settings] Discord test error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── POST /api/settings/test-slack ────────────────────────────────────────
+app.post('/api/settings/test-slack', async (req, res) => {
+  const webhook = (req.body.webhook && req.body.webhook !== '***')
+    ? req.body.webhook
+    : appSettings.slackWebhook;
+
+  if (!webhook) {
+    return res.status(400).json({ ok: false, error: 'Slack webhook not configured' });
+  }
+
+  try {
+    const { default: fetch } = await import('node-fetch');
+    const r = await fetch(webhook, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text: '✅ *MyPresc Deploy* — Test notification',
+        attachments: [{
+          color: '#06b6d4',
+          text: 'Slack webhook connected successfully!',
+          footer: 'MyPresc Deploy',
+          ts: Math.floor(Date.now() / 1000),
+        }],
+      }),
+    });
+
+    if (!r.ok) {
+      const text = await r.text().catch(() => '');
+      throw new Error(`Slack returned ${r.status}: ${text}`);
+    }
+
+    auditLog({ action: 'Slack test sent', category: 'integration', ip: getClientIp(req) });
+    console.log('[settings] ✅ Slack test message sent');
+    res.json({ ok: true, message: 'Message sent to Slack!' });
+  } catch (err) {
+    auditLog({ action: 'Slack test failed', category: 'integration', details: err.message, ip: getClientIp(req), success: 0 });
+    console.error('[settings] Slack test error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── POST /api/settings/regenerate-token ──────────────────────────────────
+app.post('/api/settings/regenerate-token', (req, res) => {
+  try {
+    appSettings.apiToken = crypto.randomBytes(32).toString('hex');
+    saveSettings(appSettings);
+    auditLog({ action: 'API token regenerated', category: 'security', ip: getClientIp(req) });
+    console.log('[settings] ✅ API token regenerated');
+    res.json({ ok: true, token: appSettings.apiToken });
+  } catch (e) {
+    auditLog({ action: 'API token regen failed', category: 'security', details: e.message, ip: getClientIp(req), success: 0 });
+    console.error('[settings] Regen token error:', e.message);
+    res.status(500).json({ ok: false, error: 'Failed to regenerate token' });
+  }
+});
+
+// ── POST /api/settings/reset ──────────────────────────────────────────────
+app.post('/api/settings/reset', (req, res) => {
+  try {
+    appSettings = defaultSettings();
+    saveSettings(appSettings);
+    auditLog({ action: 'Settings reset to defaults', category: 'security', ip: getClientIp(req) });
+    console.log('[settings] ✅ Settings reset to defaults');
+    res.json({ ok: true });
+  } catch (e) {
+    auditLog({ action: 'Settings reset failed', category: 'security', details: e.message, ip: getClientIp(req), success: 0 });
+    console.error('[settings] Reset error:', e.message);
+    res.status(500).json({ ok: false, error: 'Failed to reset settings' });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// AUDIT LOG — GET /api/settings/audit-log?limit=20
+//
+// Réponse :
+//   entries — [{ id, timestamp, action, category, details, ip, success, timeAgo }]
+// ══════════════════════════════════════════════════════════════════════════════
+
+app.get('/api/settings/audit-log', (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 20, 100);
+
+  const rows = db.prepare(`
+    SELECT id, timestamp, action, category, details, ip, success
+    FROM   audit_log
+    ORDER  BY timestamp DESC
+    LIMIT  ?
+  `).all(limit);
+
+  const now = Date.now();
+  const entries = rows.map(r => {
+    const diffMs  = now - r.timestamp;
+    const diffMin = Math.floor(diffMs / 60_000);
+    const diffH   = Math.floor(diffMs / 3_600_000);
+    const diffD   = Math.floor(diffMs / 86_400_000);
+
+    let timeAgo;
+    if (diffMin < 1)       timeAgo = 'just now';
+    else if (diffMin < 60) timeAgo = `${diffMin} min${diffMin > 1 ? 's' : ''} ago`;
+    else if (diffH   < 24) timeAgo = `${diffH} hour${diffH   > 1 ? 's' : ''} ago`;
+    else                   timeAgo = `${diffD} day${diffD    > 1 ? 's' : ''} ago`;
+
+    return { ...r, timeAgo };
+  });
+
+  res.json({ entries, total: entries.length });
+});
+
+// ── sendNotification ──────────────────────────────────────────────────────
+async function sendNotification(type, message) {
+  const key = `notify${type}`;
+  if (!appSettings[key]) return;
+
+  let fetch;
+  try {
+    ({ default: fetch } = await import('node-fetch'));
+  } catch {
+    console.warn('[sendNotification] node-fetch not available');
+    return;
+  }
+
+  const color = type === 'Failure' ? 0xef4444 : 0x10b981;
+
+  if (appSettings.discordWebhook) {
+    fetch(appSettings.discordWebhook, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        embeds: [{
+          title: `MyPresc Deploy — ${type}`,
+          description: message,
+          color,
+          timestamp: new Date().toISOString(),
+        }],
+      }),
+    }).catch(err => console.error('[sendNotification] Discord error:', err.message));
+  }
+
+  if (appSettings.slackWebhook) {
+    fetch(appSettings.slackWebhook, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: `*MyPresc Deploy — ${type}*\n${message}` }),
+    }).catch(err => console.error('[sendNotification] Slack error:', err.message));
+  }
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // HEALTH
@@ -504,5 +1000,6 @@ server.listen(PORT, () => {
   console.log(`\n🚀 MyPresc Backend    → http://localhost:${PORT}`);
   console.log(`🔌 WebSocket Terminal → ws://localhost:${PORT}/terminal/:id`);
   console.log(`🗄️  SQLite history     → metrics-history.db`);
+  console.log(`📋 Audit log          → /api/settings/audit-log`);
   console.log(`   Collecte toutes les 30s — historique 31 jours\n`);
 });
