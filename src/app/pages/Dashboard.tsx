@@ -1,48 +1,64 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   AreaChart, Area, XAxis, YAxis,
   Tooltip, ResponsiveContainer,
 } from 'recharts';
 import { motion } from 'motion/react';
 import { useTheme } from '../theme-context';
+import { useEnvironment } from '../../environment-context';
 import {
   Globe2, Activity, Rocket, Database, Zap, Lock,
-  ChevronDown, GitBranch, User, ArrowRight, AlertTriangle, ExternalLink,
+  ChevronDown, GitBranch, User, ArrowRight, AlertTriangle,
+  ExternalLink, CheckCircle, AlertCircle, RefreshCw,
 } from 'lucide-react';
 
-const releaseHistory = [
-  { time: '20 hr', v: 61 }, { time: '160s', v: 80 }, { time: '10d', v: 95 },
-  { time: '160c', v: 110 }, { time: '165s', v: 130 }, { time: '155s', v: 115 },
-  { time: '15s',  v: 200 }, { time: '2.5h', v: 260 }, { time: '2.5h', v: 315 },
-];
+const BACKEND_URL = 'http://localhost:3001';
 
-const recentDeployments = [
-  { time: '2 h',    service: 'Frontend', status: 'Successful', commit: '#71928', user: 'develop', duration: '22 min' },
-  { time: '6 h',    service: 'Nginx',    status: 'Successful', commit: '#71928', user: 'develop', duration: '7 min'  },
-  { time: '6 h',    service: 'Backend',  status: 'Successful', commit: '#71928', user: 'develop', duration: '6 min'  },
-  { time: '6 h',    service: 'Postgres', status: 'Successful', commit: '#71928', user: 'develop', duration: '5 min'  },
-  { time: '3 days', service: 'Certbot',  status: 'Successful', commit: '#71928', user: 'develop', duration: '32 min' },
-];
+// ── Types ─────────────────────────────────────────────────────────────────────
+interface Container {
+  name: string; cpu: string; mem: string; memPerc: string; status?: string;
+}
+interface LogEntry {
+  container: string; timestamp: string; message: string; level: string;
+}
+interface Alert {
+  id: string; type: string; title: string; message: string;
+  container: string; value: number; timestamp: string;
+}
 
-const activityFeed = [
-  { service: 'Frontend', icon: 'activity', color: '#8b5cf6', time: '3 hours ago', title: 'Frontend container', sub: 'Navigate /ncors/denchok' },
-  { service: 'Redis',    icon: 'zap',      color: '#ef4444', time: '2h ago',       title: 'Container restarted', sub: 'by contens' },
-  { service: 'Certbot',  icon: 'lock',     color: '#3b82f6', time: '3 days ago',   title: 'Certbot issued a new SSL certificate', sub: 'for domain.com' },
-  { service: 'Backend',  icon: 'rocket',   color: '#10b981', time: '4 days ago',   title: 'Backend container', sub: 'updated @username' },
-  { service: 'Postgres', icon: 'db',       color: '#f59e0b', time: '5 days ago',   title: 'Database backup', sub: 'completed' },
-];
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function getShortName(name: string) {
+  return name.replace(/mypresc-(staging|production|dev)-/, '');
+}
+function getContainerIcon(name: string) {
+  if (name.includes('nginx'))    return 'globe';
+  if (name.includes('frontend')) return 'activity';
+  if (name.includes('backend'))  return 'rocket';
+  if (name.includes('db') || name.includes('postgres')) return 'db';
+  if (name.includes('redis'))    return 'zap';
+  if (name.includes('certbot'))  return 'lock';
+  return 'zap';
+}
+function getContainerColor(name: string) {
+  if (name.includes('nginx'))    return '#3b82f6';
+  if (name.includes('frontend')) return '#8b5cf6';
+  if (name.includes('backend'))  return '#10b981';
+  if (name.includes('db') || name.includes('postgres')) return '#f59e0b';
+  if (name.includes('redis'))    return '#ef4444';
+  if (name.includes('certbot'))  return '#6366f1';
+  return '#94a3b8';
+}
+function timeAgo(ts: string) {
+  const diff = Date.now() - new Date(ts).getTime();
+  const m = Math.floor(diff / 60000);
+  if (m < 1)   return 'just now';
+  if (m < 60)  return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24)  return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
 
-const dockerActions = [
-  { service: 'Frontend', icon: 'activity', color: '#8b5cf6', action: 'deployed',                                          detail: '⚡ from #develop branch', time: '2h ago' },
-  { service: 'Redis',    icon: 'zap',      color: '#ef4444', action: 'Redis container restarCD',                           detail: '·· 0min',                 time: '2h ago' },
-  { service: 'Certbot',  icon: 'lock',     color: '#3b82f6', action: 'issued a new SSL certificate for domain.com',        detail: '1 min',                   time: '2 days ago' },
-  { service: 'Backend',  icon: 'rocket',   color: '#10b981', action: 'Backend container updated @username',                detail: '32 min',                  time: '4 days ago' },
-];
-
-const incidents = [
-  { level: 'critical', title: 'Backend CPU Critical', sub: 'Backend container CPU s 80% detected', time: '4 h ago' },
-];
-
+// ── Sub-components ────────────────────────────────────────────────────────────
 function SvcIcon({ icon, color, size = 14 }: { icon: string; color: string; size?: number }) {
   if (icon === 'activity') return <Activity size={size} className="flex-shrink-0" style={{ color }} />;
   if (icon === 'rocket')   return <Rocket   size={size} className="flex-shrink-0" style={{ color }} />;
@@ -52,19 +68,21 @@ function SvcIcon({ icon, color, size = 14 }: { icon: string; color: string; size
   return <Globe2 size={size} className="flex-shrink-0" style={{ color }} />;
 }
 
-function PipelineNode({ label, icon, color, active = false, dark = true }: { label: string; icon: string; color: string; active?: boolean; dark?: boolean }) {
+function PipelineNode({ label, icon, color, active = false, healthy = true, dark = true }:
+  { label: string; icon: string; color: string; active?: boolean; healthy?: boolean; dark?: boolean }) {
+  const c = healthy ? color : '#ef4444';
   return (
     <div className="relative flex-shrink-0" style={{
-      borderRadius: 8, border: `1.5px solid ${color}`,
-      boxShadow: `0 0 12px ${color}50, inset 0 0 20px ${color}08`,
-      background: active ? `${color}15` : (dark ? '#0d1424' : '#f1f5f9'),
+      borderRadius: 8, border: `1.5px solid ${c}`,
+      boxShadow: `0 0 12px ${c}50, inset 0 0 20px ${c}08`,
+      background: active ? `${c}15` : (dark ? '#0d1424' : '#f1f5f9'),
       padding: '7px 12px', display: 'flex', alignItems: 'center', gap: 7,
     }}>
-      <span className="absolute" style={{ top: -3, left: -3, width: 6, height: 6, borderRadius: '50%', backgroundColor: color, boxShadow: `0 0 6px ${color}` }} />
-      <span className="absolute" style={{ top: -3, right: -3, width: 6, height: 6, borderRadius: '50%', backgroundColor: color, boxShadow: `0 0 6px ${color}` }} />
-      <span className="absolute" style={{ bottom: -3, left: -3, width: 6, height: 6, borderRadius: '50%', backgroundColor: color, boxShadow: `0 0 6px ${color}` }} />
-      <span className="absolute" style={{ bottom: -3, right: -3, width: 6, height: 6, borderRadius: '50%', backgroundColor: color, boxShadow: `0 0 6px ${color}` }} />
-      <SvcIcon icon={icon} color={color} size={14} />
+      <span className="absolute" style={{ top: -3, left: -3, width: 6, height: 6, borderRadius: '50%', backgroundColor: c, boxShadow: `0 0 6px ${c}` }} />
+      <span className="absolute" style={{ top: -3, right: -3, width: 6, height: 6, borderRadius: '50%', backgroundColor: c, boxShadow: `0 0 6px ${c}` }} />
+      <span className="absolute" style={{ bottom: -3, left: -3, width: 6, height: 6, borderRadius: '50%', backgroundColor: c, boxShadow: `0 0 6px ${c}` }} />
+      <span className="absolute" style={{ bottom: -3, right: -3, width: 6, height: 6, borderRadius: '50%', backgroundColor: c, boxShadow: `0 0 6px ${c}` }} />
+      <SvcIcon icon={icon} color={c} size={14} />
       <span className="text-xs font-semibold" style={{ color: dark ? '#fff' : '#0f172a' }}>{label}</span>
     </div>
   );
@@ -79,12 +97,90 @@ function HLine({ color, width = 24 }: { color: string; width?: number }) {
   );
 }
 
+// ── Main Dashboard ────────────────────────────────────────────────────────────
 export default function Dashboard() {
   const [releaseRange, setReleaseRange] = useState('14 days');
   const { theme } = useTheme();
+  const { environment } = useEnvironment();
   const isDark = theme === 'dark';
 
-  const card = isDark ? 'bg-[#0f172a] border border-[#1e293b]' : 'bg-white border border-gray-200';
+  // ── State ──────────────────────────────────────────────────────────────────
+  const [containers,  setContainers]  = useState<Container[]>([]);
+  const [logs,        setLogs]        = useState<LogEntry[]>([]);
+  const [alerts,      setAlerts]      = useState<Alert[]>([]);
+  const [loading,     setLoading]     = useState(true);
+  const [lastUpdated, setLastUpdated] = useState(0);
+
+  // ── Fetch all data ─────────────────────────────────────────────────────────
+  const fetchAll = async () => {
+    try {
+      const [metricsRes, logsRes, alertsRes] = await Promise.allSettled([
+        fetch(`${BACKEND_URL}/api/metrics/${environment}`),
+        fetch(`${BACKEND_URL}/api/logs/${environment}?lines=30`),
+        fetch(`${BACKEND_URL}/api/alerts/${environment}`),
+      ]);
+
+      if (metricsRes.status === 'fulfilled' && metricsRes.value.ok) {
+        const d = await metricsRes.value.json();
+        setContainers(d.containers || []);
+      }
+      if (logsRes.status === 'fulfilled' && logsRes.value.ok) {
+        const d = await logsRes.value.json();
+        setLogs(d.logs?.slice(0, 8) || []);
+      }
+      if (alertsRes.status === 'fulfilled' && alertsRes.value.ok) {
+        const d = await alertsRes.value.json();
+        setAlerts(d.alerts || []);
+      }
+      setLastUpdated(0);
+    } catch {}
+    finally { setLoading(false); }
+  };
+
+  useEffect(() => {
+    setLoading(true);
+    setContainers([]); setLogs([]); setAlerts([]);
+    fetchAll();
+  }, [environment]);
+
+  useEffect(() => {
+    const t = setInterval(() => { fetchAll(); setLastUpdated(s => s + 30); }, 30000);
+    return () => clearInterval(t);
+  }, [environment]);
+
+  // ── Derived ────────────────────────────────────────────────────────────────
+  // Séparer containers en 2 rangées pour le pipeline
+  const row1 = containers.slice(0, 3);
+  const row2 = containers.slice(3, 6);
+
+  // Activity feed depuis les logs réels
+  const activityFeed = logs.map(log => ({
+    service:  getShortName(log.container),
+    icon:     getContainerIcon(log.container),
+    color:    getContainerColor(log.container),
+    time:     timeAgo(log.timestamp),
+    title:    log.message.slice(0, 60),
+    sub:      log.level.toUpperCase(),
+    level:    log.level,
+  }));
+
+  // Docker actions depuis les logs réels (erreurs et warnings)
+  const dockerActions = logs
+    .filter(l => l.level === 'error' || l.level === 'warn' || l.message.toLowerCase().includes('start') || l.message.toLowerCase().includes('restart'))
+    .slice(0, 4)
+    .map(log => ({
+      service: getShortName(log.container),
+      icon:    getContainerIcon(log.container),
+      color:   getContainerColor(log.container),
+      action:  log.message.slice(0, 50),
+      detail:  log.level,
+      time:    timeAgo(log.timestamp),
+    }));
+
+  // Incidents = alertes critiques
+  const incidents = alerts.filter(a => a.type === 'critical');
+
+  const card    = isDark ? 'bg-[#0f172a] border border-[#1e293b]' : 'bg-white border border-gray-200';
   const subCard = isDark ? 'bg-[#0a0f1e] border border-[#1e293b]' : 'bg-gray-50 border border-gray-100';
   const tt = {
     backgroundColor: isDark ? '#0f172a' : '#fff',
@@ -94,13 +190,51 @@ export default function Dashboard() {
   } as const;
   const ax = isDark ? '#334155' : '#94a3b8';
 
+  // Release history — sparkline basée sur le CPU moyen pour l'instant
+  const releaseHistory = containers.length > 0
+    ? containers.map((c, i) => ({
+        time: getShortName(c.name),
+        v: parseFloat(c.cpu?.replace('%', '') || '0'),
+      }))
+    : [{ time: '-', v: 0 }];
+
   return (
     <div className="flex flex-col gap-3 text-sm">
+
+      {/* Status bar */}
+      <div className={`flex items-center justify-between rounded-xl px-4 py-2 ${card}`}>
+        <div className="flex items-center gap-2">
+          {alerts.filter(a => a.type === 'critical').length > 0 ? (
+            <span className="flex items-center gap-1 text-xs font-semibold text-[#ef4444]">
+              <AlertCircle size={12} /> {alerts.filter(a => a.type === 'critical').length} Critical Alert(s)
+            </span>
+          ) : (
+            <>
+              <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[#10b981]/20">
+                <CheckCircle size={10} className="text-[#10b981]" />
+              </span>
+              <span className="text-xs font-semibold text-[#10b981]">All Systems Operational</span>
+            </>
+          )}
+        </div>
+        <div className="flex items-center gap-3 text-[11px] text-gray-400">
+          <span className="capitalize font-medium text-[#3b82f6]">{environment}</span>
+          <span>·</span>
+          <span>{containers.length} containers</span>
+          <span>·</span>
+          <button onClick={fetchAll} className="flex items-center gap-1 hover:text-gray-200 transition-colors">
+            <RefreshCw size={10} /> Updated {lastUpdated}s ago
+          </button>
+        </div>
+      </div>
+
       {/* ── Main grid ── */}
       <div className="grid grid-cols-[1fr_220px_260px] gap-3 items-stretch">
 
         {/* LEFT */}
         <div className="flex flex-col gap-3 h-full">
+
+          {/* Container Architecture */}
           <motion.div className={`rounded-xl p-4 ${card}`}
             initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
             <div className="flex items-center justify-between mb-3">
@@ -109,118 +243,159 @@ export default function Dashboard() {
                 <button className="flex items-center gap-1 rounded-full bg-[#10b981]/15 px-2 py-0.5 text-[10px] text-[#10b981]">
                   <span className="h-1.5 w-1.5 rounded-full bg-[#10b981]" />Overview
                 </button>
-                <button className="flex items-center gap-1 text-[10px] text-gray-400 hover:text-gray-200">
-                  Cluster View <ChevronDown size={10} />
-                </button>
               </div>
+              <span className="text-[10px] text-gray-500 capitalize">{environment}</span>
             </div>
 
             <div className={`rounded-lg p-3 ${subCard}`}>
               <div className="flex items-center justify-between mb-3">
-                <h3 className="text-xs font-semibold text-gray-300">Deployment Pipeline Status</h3>
+                <h3 className="text-xs font-semibold text-gray-300">Container Pipeline Status</h3>
                 <div className="flex items-center gap-2 text-[10px]">
-                  <span className="flex items-center gap-1 text-[#10b981]"><span className="h-1.5 w-1.5 rounded-full bg-[#10b981]"/>Overlew</span>
-                  <span className="flex items-center gap-1 text-[#8b5cf6]"><span className="h-1.5 w-1.5 rounded-full bg-[#8b5cf6]"/>Staging<ChevronDown size={9}/></span>
+                  <span className="flex items-center gap-1 text-[#10b981]">
+                    <span className="h-1.5 w-1.5 rounded-full bg-[#10b981]"/>
+                    {containers.filter(c => c.status?.includes('Up')).length}/{containers.length} Running
+                  </span>
                 </div>
               </div>
-              <div className="flex items-center gap-2 mb-5 flex-wrap">
-                <div className="rounded border border-[#334155] bg-[#1e293b] px-2.5 py-1 text-[10px] text-gray-300">22 Mar</div>
-                <HLine color="#4ade80" width={20} />
-                <span className="text-[10px] text-gray-400">Code Review</span>
-                <HLine color="#3b82f6" width={14} />
-                <span className="text-[10px] text-[#3b82f6] font-semibold">Build</span>
-                <HLine color="#8b5cf6" width={20} />
-                <span className="text-[10px] text-gray-400">Test</span>
-                <HLine color="#f59e0b" width={20} />
-                <span className="text-[10px] text-gray-400">Release</span>
-                <HLine color="#f59e0b" width={14} />
-                <div className="flex items-center gap-1 rounded border border-[#8b5cf6]/60 px-2 py-0.5 text-[10px] text-[#8b5cf6]" style={{ boxShadow: '0 0 8px #8b5cf640', background: '#8b5cf615' }}>
-                  <GitBranch size={9}/> Staging <ChevronDown size={9}/>
+
+              {loading ? (
+                <div className="flex items-center justify-center py-8 text-xs text-gray-500">
+                  <RefreshCw size={12} className="animate-spin mr-2" /> Chargement...
                 </div>
-              </div>
-              <div className="relative rounded-lg p-4" style={{
-                background: isDark ? 'radial-gradient(ellipse at 30% 50%, #1a1060 0%, #0a0f1e 50%, #0d1020 100%)' : 'radial-gradient(ellipse at 30% 50%, #ede9fe 0%, #f1f5f9 60%, #e8f0fe 100%)',
-                border: isDark ? '1px solid #1e2a4a' : '1px solid #c7d2fe', minHeight: 140,
-              }}>
-                <div className="absolute top-2 left-16 w-20 h-20 rounded-full pointer-events-none" style={{ background: '#3b82f620', filter: 'blur(20px)' }} />
-                <div className="absolute bottom-2 right-16 w-16 h-16 rounded-full pointer-events-none" style={{ background: '#8b5cf620', filter: 'blur(16px)' }} />
-                <div className="flex items-center gap-0 mb-6 relative z-10">
-                  <PipelineNode label="Nginx"    icon="globe"    color="#3b82f6" dark={isDark} />
-                  <HLine color="#3b82f6" width={28} />
-                  <PipelineNode label="Frontend" icon="activity" color="#8b5cf6" active dark={isDark} />
-                  <HLine color="#f59e0b" width={28} />
-                  <PipelineNode label="Backend"  icon="rocket"   color="#10b981" dark={isDark} />
+              ) : containers.length === 0 ? (
+                <div className="flex items-center justify-center py-8 text-xs text-gray-500">
+                  Aucun VPS connecté
                 </div>
-                <div className="absolute z-10" style={{ left: 53, top: 36, width: 1.5, height: 44, background: 'linear-gradient(to bottom, #3b82f6, #6366f1)', boxShadow: '0 0 5px #3b82f680' }} />
-                <div className="absolute z-10" style={{ left: 172, top: 36, width: 1.5, height: 44, background: 'linear-gradient(to bottom, #8b5cf6, #10b981)', boxShadow: '0 0 5px #8b5cf680' }} />
-                <div className="absolute z-10" style={{ left: 46, top: 76, width: 7, height: 7, borderRadius: '50%', background: '#6366f1', boxShadow: '0 0 6px #6366f1' }} />
-                <div className="absolute z-10" style={{ left: 165, top: 76, width: 7, height: 7, borderRadius: '50%', background: '#10b981', boxShadow: '0 0 6px #10b981' }} />
-                <div className="flex items-center gap-0 relative z-10">
-                  <PipelineNode label="Certbot"  icon="lock"     color="#6366f1" dark={isDark} />
-                  <HLine color="#6366f1" width={28} />
-                  <PipelineNode label="Backend"  icon="rocket"   color="#10b981" active dark={isDark} />
-                  <HLine color="#ef4444" width={28} />
-                  <PipelineNode label="Redis"    icon="zap"      color="#ef4444" dark={isDark} />
+              ) : (
+                <div className="relative rounded-lg p-4" style={{
+                  background: isDark
+                    ? 'radial-gradient(ellipse at 30% 50%, #1a1060 0%, #0a0f1e 50%, #0d1020 100%)'
+                    : 'radial-gradient(ellipse at 30% 50%, #ede9fe 0%, #f1f5f9 60%, #e8f0fe 100%)',
+                  border: isDark ? '1px solid #1e2a4a' : '1px solid #c7d2fe',
+                  minHeight: 140,
+                }}>
+                  <div className="absolute top-2 left-16 w-20 h-20 rounded-full pointer-events-none" style={{ background: '#3b82f620', filter: 'blur(20px)' }} />
+                  <div className="absolute bottom-2 right-16 w-16 h-16 rounded-full pointer-events-none" style={{ background: '#8b5cf620', filter: 'blur(16px)' }} />
+
+                  {/* Row 1 */}
+                  <div className="flex items-center gap-0 mb-6 relative z-10 flex-wrap">
+                    {row1.map((c, i) => {
+                      const short   = getShortName(c.name);
+                      const color   = getContainerColor(c.name);
+                      const icon    = getContainerIcon(c.name);
+                      const healthy = c.status?.includes('Up') ?? true;
+                      return (
+                        <div key={c.name} className="flex items-center">
+                          <PipelineNode label={short} icon={icon} color={color}
+                            active={healthy} healthy={healthy} dark={isDark} />
+                          {i < row1.length - 1 && <HLine color={color} width={28} />}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Vertical connectors */}
+                  {row1[0] && row2[0] && (
+                    <>
+                      <div className="absolute z-10" style={{ left: 53, top: 36, width: 1.5, height: 44, background: 'linear-gradient(to bottom, #3b82f6, #6366f1)', boxShadow: '0 0 5px #3b82f680' }} />
+                      <div className="absolute z-10" style={{ left: 46, top: 76, width: 7, height: 7, borderRadius: '50%', background: '#6366f1', boxShadow: '0 0 6px #6366f1' }} />
+                    </>
+                  )}
+
+                  {/* Row 2 */}
+                  <div className="flex items-center gap-0 relative z-10 flex-wrap">
+                    {row2.map((c, i) => {
+                      const short   = getShortName(c.name);
+                      const color   = getContainerColor(c.name);
+                      const icon    = getContainerIcon(c.name);
+                      const healthy = c.status?.includes('Up') ?? true;
+                      return (
+                        <div key={c.name} className="flex items-center">
+                          <PipelineNode label={short} icon={icon} color={color}
+                            active={healthy} healthy={healthy} dark={isDark} />
+                          {i < row2.length - 1 && <HLine color={color} width={28} />}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           </motion.div>
 
+          {/* Recent Deployments — hardcodé pour l'instant, branché GitHub après */}
           <motion.div className={`rounded-xl p-4 flex-1 ${card}`}
             initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
             <div className="flex items-center justify-between mb-3">
               <h2 className="font-semibold text-sm">Recent Deployments</h2>
-              <button className="flex items-center gap-1 text-[10px] text-gray-400 hover:text-gray-200">View All <ChevronDown size={10}/></button>
+              <span className="text-[10px] text-gray-500">GitHub Actions — disponible bientôt</span>
             </div>
             <table className="w-full">
               <thead>
                 <tr className="text-[10px] text-gray-500 border-b border-[#1e293b]">
-                  <th className="text-left pb-2 font-medium">Time</th>
                   <th className="text-left pb-2 font-medium">Service</th>
                   <th className="text-left pb-2 font-medium">Status</th>
-                  <th className="text-left pb-2 font-medium"><span className="flex items-center gap-1">Commit <ArrowRight size={8}/></span></th>
-                  <th className="text-left pb-2 font-medium"><span className="flex items-center gap-1">User <ArrowRight size={8}/></span></th>
-                  <th className="text-left pb-2 font-medium">Duration</th>
+                  <th className="text-left pb-2 font-medium">Container</th>
+                  <th className="text-left pb-2 font-medium">CPU</th>
+                  <th className="text-left pb-2 font-medium">Memory</th>
                 </tr>
               </thead>
               <tbody>
-                {recentDeployments.map((d, i) => (
-                  <tr key={i} className={`text-[11px] border-b border-[#0f172a] transition-colors hover:bg-[#1e293b]/40 ${i === 0 ? (isDark ? 'bg-[#1e293b]/60' : 'bg-blue-50') : ''}`}>
-                    <td className="py-2 text-gray-400">{d.time}</td>
-                    <td className="py-2 font-semibold">{d.service}</td>
-                    <td className="py-2"><span className="flex items-center gap-1 text-[#10b981]"><span className="h-1.5 w-1.5 rounded-full bg-[#10b981]"/>{d.status}</span></td>
-                    <td className="py-2 text-gray-400"><span className="flex items-center gap-1"><GitBranch size={9}/> #{d.commit}</span></td>
-                    <td className="py-2 text-gray-400"><span className="flex items-center gap-1"><User size={9}/> {d.user}</span></td>
-                    <td className="py-2 text-gray-400">{d.duration}</td>
-                  </tr>
-                ))}
+                {loading ? (
+                  <tr><td colSpan={5} className="py-4 text-center text-xs text-gray-500">Chargement...</td></tr>
+                ) : containers.length === 0 ? (
+                  <tr><td colSpan={5} className="py-4 text-center text-xs text-gray-500">Aucun container</td></tr>
+                ) : containers.map((c, i) => {
+                  const short   = getShortName(c.name);
+                  const healthy = c.status?.includes('Up') ?? false;
+                  return (
+                    <tr key={c.name} className={`text-[11px] border-b border-[#0f172a] transition-colors hover:bg-[#1e293b]/40 ${i === 0 ? (isDark ? 'bg-[#1e293b]/60' : 'bg-blue-50') : ''}`}>
+                      <td className="py-2 font-semibold capitalize">{short}</td>
+                      <td className="py-2">
+                        <span className={`flex items-center gap-1 ${healthy ? 'text-[#10b981]' : 'text-[#ef4444]'}`}>
+                          <span className={`h-1.5 w-1.5 rounded-full ${healthy ? 'bg-[#10b981]' : 'bg-[#ef4444]'}`}/>
+                          {healthy ? 'Running' : 'Down'}
+                        </span>
+                      </td>
+                      <td className="py-2 text-gray-400 text-[10px] font-mono truncate max-w-[120px]">{c.name}</td>
+                      <td className="py-2 text-gray-400">{c.cpu}</td>
+                      <td className="py-2 text-gray-400 text-[10px]">{c.mem?.split('/')[0].trim()}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </motion.div>
         </div>
 
-        {/* MIDDLE */}
+        {/* MIDDLE — Activity Feed réel */}
         <motion.div className={`rounded-xl p-4 flex flex-col ${card}`}
           initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.12 }}>
           <h2 className="font-semibold text-sm mb-4">Activity Feed</h2>
           <div className="relative flex flex-col flex-1">
             <div className="absolute left-[13px] top-0 bottom-0 w-px bg-gradient-to-b from-[#3b82f6]/40 via-[#8b5cf6]/30 to-transparent" />
-            {activityFeed.map((item, i) => (
-              <motion.div key={i} className="relative flex gap-3 mb-4 last:mb-0"
-                initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.1 + i * 0.07 }}>
+            {loading ? (
+              <div className="text-xs text-gray-500 pl-8">Chargement...</div>
+            ) : activityFeed.length === 0 ? (
+              <div className="text-xs text-gray-500 pl-8">Aucun log disponible</div>
+            ) : activityFeed.map((item, i) => (
+              <motion.div key={i} className="relative flex gap-3 mb-3 last:mb-0"
+                initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.1 + i * 0.05 }}>
                 <div className="relative flex-shrink-0 z-10">
                   <div className="flex h-7 w-7 items-center justify-center rounded-full"
                     style={{ backgroundColor: `${item.color}18`, boxShadow: `0 0 8px ${item.color}30`, border: `1.5px solid ${item.color}50` }}>
                     <SvcIcon icon={item.icon} color={item.color} size={12} />
                   </div>
                 </div>
-                <div className={`flex-1 min-w-0 rounded-lg p-2.5 ${subCard}`}>
+                <div className={`flex-1 min-w-0 rounded-lg p-2 ${subCard}`}>
                   <div className="flex items-center justify-between gap-1 mb-0.5">
-                    <span className="text-[11px] font-semibold">{item.service}</span>
+                    <span className="text-[11px] font-semibold capitalize">{item.service}</span>
                     <span className="text-[9px] text-gray-500 flex-shrink-0">{item.time}</span>
                   </div>
-                  <div className="text-[10px] text-gray-300 leading-tight">{item.title}</div>
-                  <div className="text-[9px] text-gray-500 mt-0.5">{item.sub}</div>
+                  <div className="text-[10px] text-gray-300 leading-tight truncate">{item.title}</div>
+                  <div className={`text-[9px] mt-0.5 ${item.level === 'error' ? 'text-[#ef4444]' : item.level === 'warn' ? 'text-[#f59e0b]' : 'text-gray-500'}`}>
+                    {item.sub}
+                  </div>
                 </div>
               </motion.div>
             ))}
@@ -229,17 +404,15 @@ export default function Dashboard() {
 
         {/* RIGHT */}
         <div className="flex flex-col gap-3 h-full">
+
+          {/* Release History */}
           <motion.div className={`rounded-xl p-4 ${card}`}
             initial={{ opacity: 0, x: 8 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.08 }}>
             <div className="flex items-center justify-between mb-2">
-              <h2 className="font-semibold text-sm">Release History <span className="ml-1 text-[10px] text-gray-500 font-normal">(Last 14 Days)</span></h2>
-              <button className="flex items-center gap-1 text-[10px] text-gray-400"><span className="text-[#3b82f6]">↑↓</span> 14 days <ChevronDown size={9}/></button>
-            </div>
-            <div className="flex gap-2 mb-2 text-[10px]">
-              {['14 days','30 days','90 days'].map(r => (
-                <button key={r} onClick={() => setReleaseRange(r)}
-                  className={`transition-colors ${releaseRange === r ? 'text-white font-semibold' : 'text-gray-500 hover:text-gray-300'}`}>{r}</button>
-              ))}
+              <h2 className="font-semibold text-sm">
+                CPU per Container
+                <span className="ml-1 text-[10px] text-gray-500 font-normal">(live)</span>
+              </h2>
             </div>
             <ResponsiveContainer width="100%" height={120}>
               <AreaChart data={releaseHistory} margin={{ top: 4, right: 0, left: -20, bottom: 0 }}>
@@ -250,21 +423,44 @@ export default function Dashboard() {
                   </linearGradient>
                 </defs>
                 <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fill: ax, fontSize: 8 }}/>
-                <YAxis axisLine={false} tickLine={false} tick={{ fill: ax, fontSize: 8 }}/>
-                <Tooltip contentStyle={tt} formatter={(v:number)=>[`${v}s`,'Releases']}/>
+                <YAxis axisLine={false} tickLine={false} tick={{ fill: ax, fontSize: 8 }} domain={[0, 100]}/>
+                <Tooltip contentStyle={tt} formatter={(v: number) => [`${v}%`, 'CPU']}/>
                 <Area type="monotone" dataKey="v" stroke="#3b82f6" strokeWidth={2} fill="url(#rh-grad)" dot={false} animationDuration={700}/>
               </AreaChart>
             </ResponsiveContainer>
           </motion.div>
 
+          {/* Docker Actions — logs réels */}
           <motion.div className={`rounded-xl p-4 flex-1 ${card}`}
             initial={{ opacity: 0, x: 8 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.12 }}>
             <div className="flex items-center justify-between mb-3">
               <h2 className="font-semibold text-sm">Docker Actions</h2>
-              <button className="flex items-center gap-1 text-[10px] text-gray-400">View All <ExternalLink size={9}/></button>
+              <button className="flex items-center gap-1 text-[10px] text-gray-400">
+                View All <ExternalLink size={9}/>
+              </button>
             </div>
-            <div className="space-y-2.5">
-              {dockerActions.map((a, i) => (
+            <div className="space-y-2">
+              {loading ? (
+                <div className="text-xs text-gray-500">Chargement...</div>
+              ) : dockerActions.length === 0 ? (
+                // Fallback : afficher les containers actifs
+                containers.slice(0, 4).map((c, i) => (
+                  <div key={i} className={`rounded-lg p-2.5 ${subCard}`}>
+                    <div className="flex items-start gap-2">
+                      <div className={`flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full ${isDark ? 'bg-[#1e293b]' : 'bg-gray-200'}`}>
+                        <SvcIcon icon={getContainerIcon(c.name)} color={getContainerColor(c.name)} size={11}/>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-semibold capitalize">{getShortName(c.name)}</span>
+                          <span className="text-[9px] text-[#10b981]">Running</span>
+                        </div>
+                        <div className="text-[9px] text-gray-400">{c.cpu} CPU · {c.mem?.split('/')[0].trim()}</div>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              ) : dockerActions.map((a, i) => (
                 <div key={i} className={`rounded-lg p-2.5 ${subCard}`}>
                   <div className="flex items-start gap-2">
                     <div className={`flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full ${isDark ? 'bg-[#1e293b]' : 'bg-gray-200'}`}>
@@ -272,11 +468,11 @@ export default function Dashboard() {
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between">
-                        <span className="text-[10px] font-semibold">{a.service}</span>
+                        <span className="text-[10px] font-semibold capitalize">{a.service}</span>
                         <span className="text-[9px] text-gray-500">{a.time}</span>
                       </div>
                       <div className="text-[9px] text-gray-400 leading-tight truncate">{a.action}</div>
-                      <div className="text-[9px] text-gray-600">{a.detail}</div>
+                      <div className={`text-[9px] ${a.detail === 'error' ? 'text-[#ef4444]' : a.detail === 'warn' ? 'text-[#f59e0b]' : 'text-gray-600'}`}>{a.detail}</div>
                     </div>
                   </div>
                 </div>
@@ -284,28 +480,43 @@ export default function Dashboard() {
             </div>
           </motion.div>
 
+          {/* Incidents — alertes réelles */}
           <motion.div className={`rounded-xl p-4 ${card}`}
             initial={{ opacity: 0, x: 8 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.16 }}>
             <div className="flex items-center justify-between mb-3">
-              <h2 className="font-semibold text-sm">Incidents in the Last 24 Hours</h2>
-              <button className="flex items-center gap-1 text-[10px] text-[#3b82f6] hover:underline">View History <ArrowRight size={9}/></button>
+              <h2 className="font-semibold text-sm">Incidents — Last 24h</h2>
+              <button className="flex items-center gap-1 text-[10px] text-[#3b82f6] hover:underline">
+                View History <ArrowRight size={9}/>
+              </button>
             </div>
-            <div className="space-y-2">
-              {incidents.map((inc, i) => (
-                <div key={i} className={`rounded-lg p-2.5 ${isDark ? 'bg-[#dc2626]/10 border border-[#dc2626]/20' : 'bg-red-50 border border-red-200'}`}>
-                  <div className="flex items-start gap-2">
-                    <AlertTriangle size={12} className="text-[#f59e0b] flex-shrink-0 mt-0.5"/>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[10px] font-semibold text-[#ef4444]">{inc.title}</span>
-                        <span className="text-[9px] text-gray-500">{inc.time}</span>
+            {loading ? (
+              <div className="text-xs text-gray-500">Chargement...</div>
+            ) : incidents.length === 0 ? (
+              <div className={`rounded-lg p-2.5 ${isDark ? 'bg-[#10b981]/10 border border-[#10b981]/20' : 'bg-green-50 border border-green-200'}`}>
+                <div className="flex items-center gap-2">
+                  <CheckCircle size={12} className="text-[#10b981]" />
+                  <span className="text-[10px] font-semibold text-[#10b981]">No active incidents</span>
+                </div>
+                <div className="text-[9px] text-gray-500 mt-0.5 ml-5">All systems normal</div>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {incidents.map((inc, i) => (
+                  <div key={i} className={`rounded-lg p-2.5 ${isDark ? 'bg-[#dc2626]/10 border border-[#dc2626]/20' : 'bg-red-50 border border-red-200'}`}>
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle size={12} className="text-[#f59e0b] flex-shrink-0 mt-0.5"/>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-semibold text-[#ef4444]">{inc.title}</span>
+                          <span className="text-[9px] text-gray-500">{timeAgo(inc.timestamp)}</span>
+                        </div>
+                        <div className="text-[9px] text-gray-400">{inc.message}</div>
                       </div>
-                      <div className="text-[9px] text-gray-400">{inc.sub}</div>
                     </div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </motion.div>
         </div>
       </div>

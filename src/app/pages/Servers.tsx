@@ -30,8 +30,13 @@ export default function Servers() {
   const isDark = theme === 'dark';
 
   // ── Form state ──────────────────────────────────────────────────────────────
-  const [form,         setForm]         = useState({ id: '', name: '', host: '', username: '', password: '', port: '22' });
-  const [showPassword, setShowPassword] = useState(false);
+  const [form,         setForm]         = useState({
+    id: '', name: '', host: '', username: '', password: '', port: '22',
+    githubRepo:  '',   // ← AJOUTÉ
+    githubToken: '',   // ← AJOUTÉ
+  });
+  const [showPassword,    setShowPassword]    = useState(false);
+  const [showGithubToken, setShowGithubToken] = useState(false); // ← AJOUTÉ
   const [formLoading,  setFormLoading]  = useState(false);
   const [formError,    setFormError]    = useState<string | null>(null);
   const [formSuccess,  setFormSuccess]  = useState(false);
@@ -98,14 +103,19 @@ export default function Servers() {
       const res = await fetch(`${BACKEND_URL}/api/vps`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ ...form, port: parseInt(form.port) || 22 }),
+        body:    JSON.stringify({
+          ...form,
+          port: parseInt(form.port) || 22,
+          githubRepo:  form.githubRepo  || undefined,
+          githubToken: form.githubToken || undefined,
+        }),
       });
       if (!res.ok) { const d = await res.json(); throw new Error(d.error); }
       setFormSuccess(true);
       setTimeout(() => {
         setShowAddModal(false);
         setFormSuccess(false);
-        setForm({ id: '', name: '', host: '', username: '', password: '', port: '22' });
+        setForm({ id: '', name: '', host: '', username: '', password: '', port: '22', githubRepo: '', githubToken: '' });
         loadVps();
       }, 1200);
     } catch (err: any) {
@@ -297,11 +307,12 @@ export default function Servers() {
       display: flex; align-items: center; justify-content: center; padding: 24px;
     }
     .srv-modal {
-      width: 100%; max-width: 480px;
+      width: 100%; max-width: 520px;
       background: ${isDark ? 'linear-gradient(145deg, #0f172a, #0a1223)' : '#ffffff'};
       border: 1px solid ${isDark ? 'rgba(6,182,212,0.3)' : 'rgba(6,182,212,0.4)'};
       border-radius: 20px; padding: 28px; position: relative;
       box-shadow: ${isDark ? '0 0 60px rgba(6,182,212,0.1), 0 24px 48px rgba(0,0,0,0.5)' : '0 24px 48px rgba(0,0,0,0.15)'};
+      max-height: 90vh; overflow-y: auto;
     }
     .srv-modal::before {
       content: ''; position: absolute; inset: 0; border-radius: 20px; padding: 1px;
@@ -319,6 +330,22 @@ export default function Servers() {
       cursor: pointer; color: ${isDark ? '#64748b' : '#94a3b8'}; transition: all 0.2s;
     }
     .srv-modal-close:hover { color: ${isDark ? '#e2e8f0' : '#0f172a'}; }
+
+    .srv-section-divider {
+      display: flex; align-items: center; gap: 10px; margin: 18px 0 14px;
+    }
+    .srv-section-divider span {
+      font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+      color: ${isDark ? '#475569' : '#94a3b8'};
+    }
+    .srv-section-divider::before, .srv-section-divider::after {
+      content: ''; flex: 1; height: 1px;
+      background: ${isDark ? 'rgba(255,255,255,0.08)' : 'rgba(6,182,212,0.2)'};
+    }
+    .srv-github-badge {
+      display: inline-flex; align-items: center; gap: 5px; font-size: 11px;
+      color: ${isDark ? '#64748b' : '#94a3b8'}; margin-bottom: 14px;
+    }
 
     .srv-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
     .srv-form-full { grid-column: 1 / -1; }
@@ -491,6 +518,7 @@ export default function Servers() {
             </div>
             <div className="srv-modal-sub">Configure SSH connection to your server</div>
 
+            {/* ── SSH Fields ── */}
             <div className="srv-form-grid">
               <div>
                 <label className="srv-label">ENVIRONMENT ID</label>
@@ -526,6 +554,36 @@ export default function Servers() {
                     onChange={e => setForm(f => ({ ...f, password: e.target.value }))} />
                   <button className="srv-input-icon" onClick={() => setShowPassword(s => !s)}>
                     {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* ── GitHub Section (optionnel) ── */}
+            <div className="srv-section-divider">
+              <span>GitHub Actions (optionnel)</span>
+            </div>
+            <div className="srv-github-badge">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/>
+              </svg>
+              Permet d'afficher le pipeline CI/CD de ce VPS
+            </div>
+            <div className="srv-form-grid">
+              <div className="srv-form-full">
+                <label className="srv-label">GITHUB REPO</label>
+                <input className="srv-input" placeholder="username/repo-name" value={form.githubRepo}
+                  onChange={e => setForm(f => ({ ...f, githubRepo: e.target.value }))} />
+              </div>
+              <div className="srv-form-full">
+                <label className="srv-label">GITHUB TOKEN</label>
+                <div className="srv-input-wrap">
+                  <input className="srv-input" type={showGithubToken ? 'text' : 'password'}
+                    placeholder="ghp_xxxxxxxxxxxxxxxxxxxx" value={form.githubToken}
+                    style={{ paddingRight: 40 }}
+                    onChange={e => setForm(f => ({ ...f, githubToken: e.target.value }))} />
+                  <button className="srv-input-icon" onClick={() => setShowGithubToken(s => !s)}>
+                    {showGithubToken ? <EyeOff size={15} /> : <Eye size={15} />}
                   </button>
                 </div>
               </div>

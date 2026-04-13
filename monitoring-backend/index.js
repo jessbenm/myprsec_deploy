@@ -299,16 +299,26 @@ function groupDataByInterval(rows, rangeMs) {
 // ROUTES VPS
 // ══════════════════════════════════════════════════════════════════════════════
 
+// ── POST /api/vps — Ajouter un VPS (avec githubRepo et githubToken optionnels)
 app.post('/api/vps', (req, res) => {
-  const { id, name, host, username, password, port } = req.body;
+  const { id, name, host, username, password, port, githubRepo, githubToken } = req.body;
   if (!id || !host || !username || !password)
     return res.status(400).json({ error: 'Requis : id, host, username, password' });
 
-  vpsStore[id] = { id, name: name || id, host, port: port || 22, username, password };
+  vpsStore[id] = {
+    id,
+    name:        name || id,
+    host,
+    port:        port || 22,
+    username,
+    password,
+    githubRepo:  githubRepo  || null,
+    githubToken: githubToken || null,
+  };
   saveStore();
   Promise.all([collectMetrics(id), collectLatency(id)]);
   auditLog({ action: 'VPS added', category: 'vps', details: `${id} (${username}@${host})`, ip: getClientIp(req) });
-  console.log(`✅ VPS "${id}" enregistré : ${username}@${host}`);
+  console.log(`✅ VPS "${id}" enregistré : ${username}@${host}${githubRepo ? ' | GitHub: ' + githubRepo : ''}`);
   res.json({ message: 'VPS ajouté', vps: { id, name, host } });
 });
 
@@ -625,9 +635,183 @@ app.get('/api/alerts/:id', async (req, res) => {
   }
 });
 
+// ══════════════════════════════════════════════════════════════════════════════
+// GITHUB ACTIONS — Routes Pipeline
+// ══════════════════════════════════════════════════════════════════════════════
 
+// GET /api/pipeline/:id — Récupérer les runs GitHub Actions
+app.get('/api/pipeline/:id', async (req, res) => {
+  const vps = vpsStore[req.params.id];
+  if (!vps) return res.status(404).json({ error: 'VPS introuvable' });
+  if (!vps.githubRepo || !vps.githubToken)
+    return res.status(400).json({ error: 'GitHub repo/token non configurés pour ce VPS' });
 
+  try {
+    const { default: fetch } = await import('node-fetch');
+    const headers = {
+      'Authorization': `Bearer ${vps.githubToken}`,
+      'Accept': 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    };
 
+    // Récupérer les workflows disponibles
+    const workflowsRes = await fetch(
+      `https://api.github.com/repos/${vps.githubRepo}/actions/workflows`,
+      { headers }
+    );
+    if (!workflowsRes.ok) throw new Error(`GitHub API: ${workflowsRes.status} — vérifiez repo/token`);
+    const workflowsData = await workflowsRes.json();
+
+    // Récupérer les derniers runs (toutes workflows confondus)
+    const runsRes = await fetch(
+      `https://api.github.com/repos/${vps.githubRepo}/actions/runs?per_page=10`,
+      { headers }
+    );
+    const runsData = await runsRes.json();
+    const runs = runsData.workflow_runs || [];
+
+    // Récupérer les jobs du dernier run
+    let jobs = [];
+    if (runs.length > 0) {
+      const jobsRes = await fetch(
+        `https://api.github.com/repos/${vps.githubRepo}/actions/runs/${runs[0].id}/jobs`,
+        { headers }
+      );
+      const jobsData = await jobsRes.json();
+      jobs = jobsData.jobs || [];
+    }
+
+    // Stats globales
+    const totalRuns    = runs.length;
+    const successRuns  = runs.filter(r => r.conclusion === 'success').length;
+    const successRate  = totalRuns ? Math.round((successRuns / totalRuns) * 100) : 0;
+    const avgDuration  = runs
+      .filter(r => r.run_started_at && r.updated_at && r.conclusion)
+      .reduce((sum, r) => {
+        const ms = new Date(r.updated_at) - new Date(r.run_started_at);
+        return sum + ms;
+      }, 0) / Math.max(1, runs.filter(r => r.conclusion).length);
+
+    res.json({
+      repo:         vps.githubRepo,
+      workflows:    workflowsData.workflows || [],
+      runs:         runs.map(r => ({
+        id:          r.id,
+        name:        r.name,
+        status:      r.status,
+        conclusion:  r.conclusion,
+        branch:      r.head_branch,
+        commit:      r.head_sha?.slice(0, 7),
+        commitMsg:   r.head_commit?.message?.split('\n')[0] || '',
+        actor:       r.actor?.login || '',
+        createdAt:   r.created_at,
+        updatedAt:   r.updated_at,
+        duration:    r.run_started_at && r.updated_at
+          ? Math.round((new Date(r.updated_at) - new Date(r.run_started_at)) / 1000)
+          : 0,
+        url:         r.html_url,
+      })),
+      jobs:         jobs.map(j => ({
+        id:          j.id,
+        name:        j.name,
+        status:      j.status,
+        conclusion:  j.conclusion,
+        startedAt:   j.started_at,
+        completedAt: j.completed_at,
+        duration:    j.started_at && j.completed_at
+          ? Math.round((new Date(j.completed_at) - new Date(j.started_at)) / 1000)
+          : 0,
+        steps:       (j.steps || []).map(s => ({
+          name:       s.name,
+          status:     s.status,
+          conclusion: s.conclusion,
+          number:     s.number,
+          duration:   s.started_at && s.completed_at
+            ? Math.round((new Date(s.completed_at) - new Date(s.started_at)) / 1000)
+            : 0,
+        })),
+      })),
+      stats: {
+        totalRuns,
+        successRuns,
+        successRate,
+        avgDurationSec: Math.round(avgDuration / 1000),
+      },
+      timestamp: new Date().toISOString(),
+    });
+
+  } catch (err) {
+    console.error(`[pipeline/${req.params.id}]`, err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/pipeline/:id/trigger — Déclencher un workflow manuellement
+app.post('/api/pipeline/:id/trigger', async (req, res) => {
+  const vps = vpsStore[req.params.id];
+  if (!vps) return res.status(404).json({ error: 'VPS introuvable' });
+  if (!vps.githubRepo || !vps.githubToken)
+    return res.status(400).json({ error: 'GitHub repo/token non configurés' });
+
+  const { workflow, branch = 'main', inputs = {} } = req.body;
+  if (!workflow) return res.status(400).json({ error: 'workflow requis (ex: deploy.yml)' });
+
+  try {
+    const { default: fetch } = await import('node-fetch');
+    const r = await fetch(
+      `https://api.github.com/repos/${vps.githubRepo}/actions/workflows/${workflow}/dispatches`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${vps.githubToken}`,
+          'Accept': 'application/vnd.github+json',
+          'Content-Type': 'application/json',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+        body: JSON.stringify({ ref: branch, inputs }),
+      }
+    );
+
+    if (r.status === 204) {
+      auditLog({ action: 'Pipeline triggered', category: 'pipeline', details: `${vps.githubRepo} — ${workflow} on ${branch}`, ip: getClientIp(req) });
+      res.json({ ok: true, message: `Workflow ${workflow} déclenché sur ${branch}` });
+    } else {
+      const data = await r.json().catch(() => ({}));
+      throw new Error(data.message || `GitHub API: ${r.status}`);
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/pipeline/:id/rerun/:runId — Relancer un run
+app.post('/api/pipeline/:id/rerun/:runId', async (req, res) => {
+  const vps = vpsStore[req.params.id];
+  if (!vps) return res.status(404).json({ error: 'VPS introuvable' });
+
+  try {
+    const { default: fetch } = await import('node-fetch');
+    const r = await fetch(
+      `https://api.github.com/repos/${vps.githubRepo}/actions/runs/${req.params.runId}/rerun`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${vps.githubToken}`,
+          'Accept': 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+      }
+    );
+    if (r.status === 201) {
+      auditLog({ action: 'Pipeline rerun', category: 'pipeline', details: `run ${req.params.runId}`, ip: getClientIp(req) });
+      res.json({ ok: true });
+    } else {
+      throw new Error(`GitHub API: ${r.status}`);
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ══════════════════════════════════════════════════════════════════════════════
 // WEBSOCKET TERMINAL SSH
@@ -784,7 +968,6 @@ app.post('/api/settings', (req, res) => {
 
     saveSettings(appSettings);
 
-    // ── AUDIT LOG ──
     auditLog({
       action:  'Settings saved',
       category: 'settings',
@@ -913,13 +1096,7 @@ app.post('/api/settings/reset', (req, res) => {
   }
 });
 
-// ══════════════════════════════════════════════════════════════════════════════
-// AUDIT LOG — GET /api/settings/audit-log?limit=20
-//
-// Réponse :
-//   entries — [{ id, timestamp, action, category, details, ip, success, timeAgo }]
-// ══════════════════════════════════════════════════════════════════════════════
-
+// ── GET /api/settings/audit-log ───────────────────────────────────────────
 app.get('/api/settings/audit-log', (req, res) => {
   const limit = Math.min(parseInt(req.query.limit) || 20, 100);
 

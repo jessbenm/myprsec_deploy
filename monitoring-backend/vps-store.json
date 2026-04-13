@@ -6,13 +6,5 @@
     "port": 22,
     "username": "yasmine",
     "password": "YasmineMypresc"
-  },
-  "staging": {
-    "id": "staging",
-    "name": "VPS Staging",
-    "host": "173.212.248.243",
-    "port": 22,
-    "username": "mypresc",
-    "password": "MyPrescription2025"
   }
 }
