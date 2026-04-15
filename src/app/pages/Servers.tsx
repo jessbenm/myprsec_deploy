@@ -18,6 +18,13 @@ interface VPS {
   status?: 'healthy' | 'warning' | 'error' | 'loading';
 }
 
+// ── Nettoyer l'URL GitHub → "owner/repo" ──────────────────────────────────────
+function cleanGithubRepo(repo: string): string | undefined {
+  if (!repo.trim()) return undefined;
+  const match = repo.match(/github\.com\/([^\/]+\/[^\/]+?)(?:\.git)?(?:\/.*)?$/);
+  return match ? match[1] : repo.trim();
+}
+
 export default function Servers() {
   const [vpsList,           setVpsList]           = useState<VPS[]>([]);
   const [selectedServer,    setSelectedServer]    = useState<any | null>(null);
@@ -32,11 +39,11 @@ export default function Servers() {
   // ── Form state ──────────────────────────────────────────────────────────────
   const [form,         setForm]         = useState({
     id: '', name: '', host: '', username: '', password: '', port: '22',
-    githubRepo:  '',   // ← AJOUTÉ
-    githubToken: '',   // ← AJOUTÉ
+    githubRepo:  '',
+    githubToken: '',
   });
   const [showPassword,    setShowPassword]    = useState(false);
-  const [showGithubToken, setShowGithubToken] = useState(false); // ← AJOUTÉ
+  const [showGithubToken, setShowGithubToken] = useState(false);
   const [formLoading,  setFormLoading]  = useState(false);
   const [formError,    setFormError]    = useState<string | null>(null);
   const [formSuccess,  setFormSuccess]  = useState(false);
@@ -105,9 +112,9 @@ export default function Servers() {
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({
           ...form,
-          port: parseInt(form.port) || 22,
-          githubRepo:  form.githubRepo  || undefined,
-          githubToken: form.githubToken || undefined,
+          port:        parseInt(form.port) || 22,
+          githubRepo:  cleanGithubRepo(form.githubRepo),   // ← CORRIGÉ
+          githubToken: form.githubToken.trim() || undefined,
         }),
       });
       if (!res.ok) { const d = await res.json(); throw new Error(d.error); }
@@ -572,7 +579,9 @@ export default function Servers() {
             <div className="srv-form-grid">
               <div className="srv-form-full">
                 <label className="srv-label">GITHUB REPO</label>
-                <input className="srv-input" placeholder="username/repo-name" value={form.githubRepo}
+                <input className="srv-input"
+                  placeholder="owner/repo  ou  https://github.com/owner/repo"
+                  value={form.githubRepo}
                   onChange={e => setForm(f => ({ ...f, githubRepo: e.target.value }))} />
               </div>
               <div className="srv-form-full">

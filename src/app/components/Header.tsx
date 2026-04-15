@@ -68,9 +68,11 @@ export default function Header() {
     >
       {/* Left: title */}
       <div className="flex flex-col">
-        <h1 className="text-base font-semibold tracking-tight" style={{ color: isDark ? '#f1f5f9' : '#0f172a' }}>
-          MyPresc Deploy
-        </h1>
+       <div className="text-lg font-black tracking-tight text-white">
+       Yam<span className="text-blue-300">Ops</span>
+
+      
+       </div>
         <span className="text-[10px] font-medium uppercase tracking-widest" style={{ color: isDark ? '#475569' : '#94a3b8' }}>
           {pageTitle}
         </span>

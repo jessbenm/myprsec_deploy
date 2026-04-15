@@ -15,13 +15,21 @@ app.use(cors());
 app.use(express.json());
 
 // ══════════════════════════════════════════════════════════════════════════════
-// VPS STORE
+// VPS STORE  —  structure UNIQUE : vpsStore[id] = { ... }
 // ══════════════════════════════════════════════════════════════════════════════
 const VPS_FILE = './vps-store.json';
 
 function loadStore() {
   try {
-    if (fs.existsSync(VPS_FILE)) return JSON.parse(fs.readFileSync(VPS_FILE, 'utf8'));
+    if (fs.existsSync(VPS_FILE)) {
+      const raw = JSON.parse(fs.readFileSync(VPS_FILE, 'utf8'));
+      // Compatibilité : ancienne structure { vps: { id: {...} } }
+      if (raw && raw.vps && typeof raw.vps === 'object') {
+        console.warn('⚠️  Migration vps-store.json : ancienne structure détectée, conversion...');
+        return raw.vps;
+      }
+      return raw;
+    }
   } catch (e) {
     console.error('vps-store.json:', e.message);
   }
@@ -86,21 +94,19 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(timestamp);
 `);
 
-// Nettoyage auto des données > 31 jours
 function cleanOldData() {
-  const cutoff = Date.now() - 31 * 24 * 60 * 60 * 1000;
+  const cutoff      = Date.now() - 31 * 24 * 60 * 60 * 1000;
+  const auditCutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
   db.prepare('DELETE FROM metrics          WHERE timestamp < ?').run(cutoff);
   db.prepare('DELETE FROM vps_snapshots    WHERE timestamp < ?').run(cutoff);
   db.prepare('DELETE FROM latency_history  WHERE timestamp < ?').run(cutoff);
-  // Garder 90 jours pour l'audit log
-  const auditCutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
   db.prepare('DELETE FROM audit_log        WHERE timestamp < ?').run(auditCutoff);
 }
 setInterval(cleanOldData, 60 * 60 * 1000);
 cleanOldData();
 
 // ══════════════════════════════════════════════════════════════════════════════
-// AUDIT LOG HELPER
+// AUDIT LOG
 // ══════════════════════════════════════════════════════════════════════════════
 const insertAudit = db.prepare(
   'INSERT INTO audit_log (timestamp, action, category, details, ip, success) VALUES (?, ?, ?, ?, ?, ?)'
@@ -121,6 +127,15 @@ function getClientIp(req) {
     req.socket?.remoteAddress ||
     'unknown'
   );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// HELPER — Nettoyer URL GitHub → "owner/repo"
+// ══════════════════════════════════════════════════════════════════════════════
+function cleanGithubRepo(repo) {
+  if (!repo || !repo.trim()) return null;
+  const match = repo.trim().match(/github\.com\/([^\/]+\/[^\/]+?)(?:\.git)?(?:\/.*)?$/);
+  return match ? match[1] : repo.trim();
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -149,11 +164,13 @@ function runSSH(vps, command) {
 }
 
 function parseCpu(s) { return parseFloat(s) || 0; }
+
 function parseMem(s) {
   const m = s.match(/([\d.]+)\s*(MiB|GiB|MB|GB)/i);
   if (!m) return 0;
   return parseFloat(m[1]) * (/gib|gb/i.test(m[2]) ? 1024 : 1);
 }
+
 function detectLogLevel(msg) {
   const m = msg.toLowerCase();
   if (m.includes('error') || m.includes('fatal')) return 'error';
@@ -163,7 +180,7 @@ function detectLogLevel(msg) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// PING HTTP — mesure de latence toutes les 30s
+// PING HTTP
 // ══════════════════════════════════════════════════════════════════════════════
 function pingHttp(host) {
   return new Promise((resolve) => {
@@ -182,9 +199,13 @@ const insertLatency = db.prepare(
   'INSERT INTO latency_history (vps_id, timestamp, url, ms, status, ok) VALUES (?, ?, ?, ?, ?, ?)'
 );
 
+// ══════════════════════════════════════════════════════════════════════════════
+// COLLECTE LATENCE  —  structure unique : vpsStore[vpsId]
+// ══════════════════════════════════════════════════════════════════════════════
 async function collectLatency(vpsId) {
   const vps = vpsStore[vpsId];
   if (!vps) return;
+
   try {
     const { ms, status, ok } = await pingHttp(vps.host);
     insertLatency.run(vpsId, Date.now(), `http://${vps.host}`, ms, status, ok);
@@ -195,7 +216,7 @@ async function collectLatency(vpsId) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// COLLECTE MÉTRIQUES DOCKER (toutes les 30s)
+// COLLECTE MÉTRIQUES DOCKER  —  structure unique : vpsStore[vpsId]
 // ══════════════════════════════════════════════════════════════════════════════
 const insertMetric   = db.prepare(
   'INSERT INTO metrics (vps_id, timestamp, container, cpu, mem_mb, mem_perc) VALUES (?, ?, ?, ?, ?, ?)'
@@ -207,6 +228,7 @@ const insertSnapshot = db.prepare(
 async function collectMetrics(vpsId) {
   const vps = vpsStore[vpsId];
   if (!vps) return;
+
   try {
     const [statsRaw, psRaw] = await Promise.all([
       runSSH(vps, "docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}'"),
@@ -234,7 +256,7 @@ async function collectMetrics(vpsId) {
       insertSnapshot.run(vpsId, now, totalCpu, totalMem, running, total);
     })();
   } catch {
-    // Silencieux — VPS temporairement inaccessible
+    // Silencieux — VPS peut être temporairement inaccessible
   }
 }
 
@@ -247,7 +269,7 @@ async function collectAll() {
 }
 
 collectAll();
-setInterval(collectAll, 30 * 1000);
+setInterval(collectAll, 2 * 60 * 1000); 
 
 // ══════════════════════════════════════════════════════════════════════════════
 // UTILITAIRES — plages de temps & regroupement
@@ -285,9 +307,9 @@ function groupDataByInterval(rows, rangeMs) {
   return Object.entries(buckets)
     .sort(([a], [b]) => Number(a) - Number(b))
     .map(([ts, items]) => {
-      const time     = new Date(Number(ts));
+      const time      = new Date(Number(ts));
       const longRange = rangeMs >= 604_800_000;
-      const label    = longRange
+      const label     = longRange
         ? time.toLocaleDateString('fr', { month: 'short', day: 'numeric' })
             + ' ' + time.toLocaleTimeString('fr', { hour: '2-digit', minute: '2-digit' })
         : time.toLocaleTimeString('fr', { hour: '2-digit', minute: '2-digit' });
@@ -299,11 +321,13 @@ function groupDataByInterval(rows, rangeMs) {
 // ROUTES VPS
 // ══════════════════════════════════════════════════════════════════════════════
 
-// ── POST /api/vps — Ajouter un VPS (avec githubRepo et githubToken optionnels)
+// ── POST /api/vps ─────────────────────────────────────────────────────────────
 app.post('/api/vps', (req, res) => {
   const { id, name, host, username, password, port, githubRepo, githubToken } = req.body;
   if (!id || !host || !username || !password)
     return res.status(400).json({ error: 'Requis : id, host, username, password' });
+
+  const cleanRepo = cleanGithubRepo(githubRepo);
 
   vpsStore[id] = {
     id,
@@ -312,20 +336,27 @@ app.post('/api/vps', (req, res) => {
     port:        port || 22,
     username,
     password,
-    githubRepo:  githubRepo  || null,
+    githubRepo:  cleanRepo,
     githubToken: githubToken || null,
   };
   saveStore();
   Promise.all([collectMetrics(id), collectLatency(id)]);
-  auditLog({ action: 'VPS added', category: 'vps', details: `${id} (${username}@${host})`, ip: getClientIp(req) });
-  console.log(`✅ VPS "${id}" enregistré : ${username}@${host}${githubRepo ? ' | GitHub: ' + githubRepo : ''}`);
+  auditLog({
+    action:   'VPS added',
+    category: 'vps',
+    details:  `${id} (${username}@${host})${cleanRepo ? ' | GitHub: ' + cleanRepo : ''}`,
+    ip:       getClientIp(req),
+  });
+  console.log(`✅ VPS "${id}" enregistré : ${username}@${host}${cleanRepo ? ' | GitHub: ' + cleanRepo : ''}`);
   res.json({ message: 'VPS ajouté', vps: { id, name, host } });
 });
 
+// ── GET /api/vps ──────────────────────────────────────────────────────────────
 app.get('/api/vps', (req, res) => {
   res.json(Object.values(vpsStore).map(v => ({ id: v.id, name: v.name, host: v.host })));
 });
 
+// ── DELETE /api/vps/:id ───────────────────────────────────────────────────────
 app.delete('/api/vps/:id', (req, res) => {
   if (!vpsStore[req.params.id]) return res.status(404).json({ error: 'VPS introuvable' });
   auditLog({ action: 'VPS removed', category: 'vps', details: req.params.id, ip: getClientIp(req) });
@@ -334,6 +365,7 @@ app.delete('/api/vps/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+// ── POST /api/vps/:id/test ────────────────────────────────────────────────────
 app.post('/api/vps/:id/test', async (req, res) => {
   const vps = vpsStore[req.params.id];
   if (!vps) return res.status(404).json({ error: 'VPS introuvable' });
@@ -348,10 +380,10 @@ app.post('/api/vps/:id/test', async (req, res) => {
 // ══════════════════════════════════════════════════════════════════════════════
 // MÉTRIQUES TEMPS RÉEL
 // ══════════════════════════════════════════════════════════════════════════════
-
 app.get('/api/metrics/:id', async (req, res) => {
   const vps = vpsStore[req.params.id];
   if (!vps) return res.status(404).json({ error: 'VPS non trouvé' });
+
   try {
     const [statsRaw, psRaw] = await Promise.all([
       runSSH(vps, "docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}'"),
@@ -368,7 +400,12 @@ app.get('/api/metrics/:id', async (req, res) => {
       return { name, cpu, mem, memPerc, status: ps.find(p => p.name === name)?.status || 'unknown' };
     });
 
-    res.json({ vps: { id: vps.id, name: vps.name, host: vps.host }, containers, ps, timestamp: new Date().toISOString() });
+    res.json({
+      vps:       { id: vps.id, name: vps.name, host: vps.host },
+      containers,
+      ps,
+      timestamp: new Date().toISOString(),
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -377,7 +414,6 @@ app.get('/api/metrics/:id', async (req, res) => {
 // ══════════════════════════════════════════════════════════════════════════════
 // HISTORIQUE CPU
 // ══════════════════════════════════════════════════════════════════════════════
-
 app.get('/api/history/:id/cpu', (req, res) => {
   const { id }  = req.params;
   const rangeMs = rangeToMs(req.query.range || '24h');
@@ -413,7 +449,6 @@ app.get('/api/history/:id/cpu', (req, res) => {
 // ══════════════════════════════════════════════════════════════════════════════
 // HISTORIQUE MÉMOIRE
 // ══════════════════════════════════════════════════════════════════════════════
-
 app.get('/api/history/:id/memory', (req, res) => {
   const { id }  = req.params;
   const rangeMs = rangeToMs(req.query.range || '24h');
@@ -441,7 +476,6 @@ app.get('/api/history/:id/memory', (req, res) => {
 // ══════════════════════════════════════════════════════════════════════════════
 // HISTORIQUE LATENCE HTTP
 // ══════════════════════════════════════════════════════════════════════════════
-
 app.get('/api/history/:id/latency', (req, res) => {
   const { id }  = req.params;
   const rangeMs = rangeToMs(req.query.range || '24h');
@@ -477,9 +511,8 @@ app.get('/api/history/:id/latency', (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
-// LATENCE LIVE + historique 1h
+// LATENCE LIVE
 // ══════════════════════════════════════════════════════════════════════════════
-
 app.get('/api/response-time/:id', async (req, res) => {
   const vps = vpsStore[req.params.id];
   if (!vps) return res.status(404).json({ error: 'VPS non trouvé' });
@@ -525,11 +558,11 @@ app.get('/api/response-time/:id', async (req, res) => {
 // ══════════════════════════════════════════════════════════════════════════════
 // LOGS
 // ══════════════════════════════════════════════════════════════════════════════
-
 app.get('/api/logs/:id', async (req, res) => {
   const vps = vpsStore[req.params.id];
   if (!vps) return res.status(404).json({ error: 'VPS non trouvé' });
   const lines = parseInt(req.query.lines) || 50;
+
   try {
     const psRaw  = await runSSH(vps, "docker ps --format '{{.Names}}'");
     const names  = psRaw.split('\n').filter(Boolean);
@@ -547,6 +580,7 @@ app.get('/api/logs/:id', async (req, res) => {
         });
       } catch { return []; }
     }));
+
     res.json({
       logs: results.flat()
         .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
@@ -561,6 +595,7 @@ app.get('/api/logs/:id', async (req, res) => {
 app.get('/api/logs/:id/:container', async (req, res) => {
   const vps = vpsStore[req.params.id];
   if (!vps) return res.status(404).json({ error: 'VPS non trouvé' });
+
   try {
     const raw  = await runSSH(vps, `docker logs --tail ${parseInt(req.query.lines) || 100} --timestamps ${req.params.container} 2>&1`);
     const logs = raw.split('\n').filter(Boolean).map(line => {
@@ -581,10 +616,10 @@ app.get('/api/logs/:id/:container', async (req, res) => {
 // ══════════════════════════════════════════════════════════════════════════════
 // ALERTES
 // ══════════════════════════════════════════════════════════════════════════════
-
 app.get('/api/alerts/:id', async (req, res) => {
   const vps = vpsStore[req.params.id];
   if (!vps) return res.status(404).json({ error: 'VPS non trouvé' });
+
   try {
     const [statsRaw, psRaw] = await Promise.all([
       runSSH(vps, "docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}'"),
@@ -638,8 +673,6 @@ app.get('/api/alerts/:id', async (req, res) => {
 // ══════════════════════════════════════════════════════════════════════════════
 // GITHUB ACTIONS — Routes Pipeline
 // ══════════════════════════════════════════════════════════════════════════════
-
-// GET /api/pipeline/:id — Récupérer les runs GitHub Actions
 app.get('/api/pipeline/:id', async (req, res) => {
   const vps = vpsStore[req.params.id];
   if (!vps) return res.status(404).json({ error: 'VPS introuvable' });
@@ -649,12 +682,11 @@ app.get('/api/pipeline/:id', async (req, res) => {
   try {
     const { default: fetch } = await import('node-fetch');
     const headers = {
-      'Authorization': `Bearer ${vps.githubToken}`,
-      'Accept': 'application/vnd.github+json',
+      'Authorization':        `Bearer ${vps.githubToken}`,
+      'Accept':               'application/vnd.github+json',
       'X-GitHub-Api-Version': '2022-11-28',
     };
 
-    // Récupérer les workflows disponibles
     const workflowsRes = await fetch(
       `https://api.github.com/repos/${vps.githubRepo}/actions/workflows`,
       { headers }
@@ -662,56 +694,51 @@ app.get('/api/pipeline/:id', async (req, res) => {
     if (!workflowsRes.ok) throw new Error(`GitHub API: ${workflowsRes.status} — vérifiez repo/token`);
     const workflowsData = await workflowsRes.json();
 
-    // Récupérer les derniers runs (toutes workflows confondus)
-    const runsRes = await fetch(
+    const runsRes  = await fetch(
       `https://api.github.com/repos/${vps.githubRepo}/actions/runs?per_page=10`,
       { headers }
     );
     const runsData = await runsRes.json();
-    const runs = runsData.workflow_runs || [];
+    const runs     = runsData.workflow_runs || [];
 
-    // Récupérer les jobs du dernier run
     let jobs = [];
     if (runs.length > 0) {
-      const jobsRes = await fetch(
+      const jobsRes  = await fetch(
         `https://api.github.com/repos/${vps.githubRepo}/actions/runs/${runs[0].id}/jobs`,
         { headers }
       );
       const jobsData = await jobsRes.json();
-      jobs = jobsData.jobs || [];
+      jobs           = jobsData.jobs || [];
     }
 
-    // Stats globales
-    const totalRuns    = runs.length;
-    const successRuns  = runs.filter(r => r.conclusion === 'success').length;
-    const successRate  = totalRuns ? Math.round((successRuns / totalRuns) * 100) : 0;
-    const avgDuration  = runs
+    const totalRuns   = runs.length;
+    const successRuns = runs.filter(r => r.conclusion === 'success').length;
+    const successRate = totalRuns ? Math.round((successRuns / totalRuns) * 100) : 0;
+    const avgDuration = runs
       .filter(r => r.run_started_at && r.updated_at && r.conclusion)
-      .reduce((sum, r) => {
-        const ms = new Date(r.updated_at) - new Date(r.run_started_at);
-        return sum + ms;
-      }, 0) / Math.max(1, runs.filter(r => r.conclusion).length);
+      .reduce((sum, r) => sum + (new Date(r.updated_at) - new Date(r.run_started_at)), 0)
+      / Math.max(1, runs.filter(r => r.conclusion).length);
 
     res.json({
-      repo:         vps.githubRepo,
-      workflows:    workflowsData.workflows || [],
-      runs:         runs.map(r => ({
-        id:          r.id,
-        name:        r.name,
-        status:      r.status,
-        conclusion:  r.conclusion,
-        branch:      r.head_branch,
-        commit:      r.head_sha?.slice(0, 7),
-        commitMsg:   r.head_commit?.message?.split('\n')[0] || '',
-        actor:       r.actor?.login || '',
-        createdAt:   r.created_at,
-        updatedAt:   r.updated_at,
-        duration:    r.run_started_at && r.updated_at
+      repo:      vps.githubRepo,
+      workflows: workflowsData.workflows || [],
+      runs:      runs.map(r => ({
+        id:        r.id,
+        name:      r.name,
+        status:    r.status,
+        conclusion:r.conclusion,
+        branch:    r.head_branch,
+        commit:    r.head_sha?.slice(0, 7),
+        commitMsg: r.head_commit?.message?.split('\n')[0] || '',
+        actor:     r.actor?.login || '',
+        createdAt: r.created_at,
+        updatedAt: r.updated_at,
+        duration:  r.run_started_at && r.updated_at
           ? Math.round((new Date(r.updated_at) - new Date(r.run_started_at)) / 1000)
           : 0,
-        url:         r.html_url,
+        url:       r.html_url,
       })),
-      jobs:         jobs.map(j => ({
+      jobs: jobs.map(j => ({
         id:          j.id,
         name:        j.name,
         status:      j.status,
@@ -721,7 +748,7 @@ app.get('/api/pipeline/:id', async (req, res) => {
         duration:    j.started_at && j.completed_at
           ? Math.round((new Date(j.completed_at) - new Date(j.started_at)) / 1000)
           : 0,
-        steps:       (j.steps || []).map(s => ({
+        steps: (j.steps || []).map(s => ({
           name:       s.name,
           status:     s.status,
           conclusion: s.conclusion,
@@ -739,14 +766,12 @@ app.get('/api/pipeline/:id', async (req, res) => {
       },
       timestamp: new Date().toISOString(),
     });
-
   } catch (err) {
     console.error(`[pipeline/${req.params.id}]`, err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// POST /api/pipeline/:id/trigger — Déclencher un workflow manuellement
 app.post('/api/pipeline/:id/trigger', async (req, res) => {
   const vps = vpsStore[req.params.id];
   if (!vps) return res.status(404).json({ error: 'VPS introuvable' });
@@ -761,11 +786,11 @@ app.post('/api/pipeline/:id/trigger', async (req, res) => {
     const r = await fetch(
       `https://api.github.com/repos/${vps.githubRepo}/actions/workflows/${workflow}/dispatches`,
       {
-        method: 'POST',
+        method:  'POST',
         headers: {
-          'Authorization': `Bearer ${vps.githubToken}`,
-          'Accept': 'application/vnd.github+json',
-          'Content-Type': 'application/json',
+          'Authorization':        `Bearer ${vps.githubToken}`,
+          'Accept':               'application/vnd.github+json',
+          'Content-Type':         'application/json',
           'X-GitHub-Api-Version': '2022-11-28',
         },
         body: JSON.stringify({ ref: branch, inputs }),
@@ -784,7 +809,6 @@ app.post('/api/pipeline/:id/trigger', async (req, res) => {
   }
 });
 
-// POST /api/pipeline/:id/rerun/:runId — Relancer un run
 app.post('/api/pipeline/:id/rerun/:runId', async (req, res) => {
   const vps = vpsStore[req.params.id];
   if (!vps) return res.status(404).json({ error: 'VPS introuvable' });
@@ -794,10 +818,10 @@ app.post('/api/pipeline/:id/rerun/:runId', async (req, res) => {
     const r = await fetch(
       `https://api.github.com/repos/${vps.githubRepo}/actions/runs/${req.params.runId}/rerun`,
       {
-        method: 'POST',
+        method:  'POST',
         headers: {
-          'Authorization': `Bearer ${vps.githubToken}`,
-          'Accept': 'application/vnd.github+json',
+          'Authorization':        `Bearer ${vps.githubToken}`,
+          'Accept':               'application/vnd.github+json',
           'X-GitHub-Api-Version': '2022-11-28',
         },
       }
@@ -867,7 +891,7 @@ wssById.on('connection', (ws, _request, vpsId) => {
       if (!stream) return;
       if      (data.type === 'input')  stream.write(data.data);
       else if (data.type === 'resize') stream.setWindow(data.rows, data.cols, 0, 0);
-    } catch { /* JSON malformé, on ignore */ }
+    } catch { }
   });
 
   ws.on('close', () => { stream?.close(); conn.end(); });
@@ -882,16 +906,15 @@ wssById.on('connection', (ws, _request, vpsId) => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
-// SETTINGS — Persistence in settings.json
+// SETTINGS
 // ══════════════════════════════════════════════════════════════════════════════
 const SETTINGS_FILE = './settings.json';
-const crypto = require('crypto');
+const crypto        = require('crypto');
 
 function loadSettings() {
   try {
-    if (fs.existsSync(SETTINGS_FILE)) {
+    if (fs.existsSync(SETTINGS_FILE))
       return JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'));
-    }
   } catch (e) {
     console.error('[settings] Failed to load settings.json:', e.message);
   }
@@ -921,7 +944,6 @@ function saveSettings(s) {
 
 let appSettings = loadSettings();
 
-// ── GET /api/settings ─────────────────────────────────────────────────────
 app.get('/api/settings', (req, res) => {
   res.json({
     discordWebhook: appSettings.discordWebhook ? '***' : '',
@@ -934,241 +956,121 @@ app.get('/api/settings', (req, res) => {
   });
 });
 
-// ── POST /api/settings ────────────────────────────────────────────────────
 app.post('/api/settings', (req, res) => {
   try {
     const { discordWebhook, slackWebhook, notifyDeploy, notifyFailure, notifyRollback, sshAccess } = req.body;
     const changes = [];
 
-    if (discordWebhook && discordWebhook !== '***') {
-      appSettings.discordWebhook = discordWebhook;
-      changes.push('Discord webhook updated');
-    }
-    if (slackWebhook && slackWebhook !== '***') {
-      appSettings.slackWebhook = slackWebhook;
-      changes.push('Slack webhook updated');
-    }
+    if (discordWebhook && discordWebhook !== '***') { appSettings.discordWebhook = discordWebhook; changes.push('Discord webhook updated'); }
+    if (slackWebhook   && slackWebhook   !== '***') { appSettings.slackWebhook   = slackWebhook;   changes.push('Slack webhook updated'); }
 
-    if (notifyDeploy   !== undefined) {
-      if (appSettings.notifyDeploy !== Boolean(notifyDeploy)) changes.push(`notifyDeploy → ${notifyDeploy}`);
-      appSettings.notifyDeploy   = Boolean(notifyDeploy);
-    }
-    if (notifyFailure  !== undefined) {
-      if (appSettings.notifyFailure !== Boolean(notifyFailure)) changes.push(`notifyFailure → ${notifyFailure}`);
-      appSettings.notifyFailure  = Boolean(notifyFailure);
-    }
-    if (notifyRollback !== undefined) {
-      if (appSettings.notifyRollback !== Boolean(notifyRollback)) changes.push(`notifyRollback → ${notifyRollback}`);
-      appSettings.notifyRollback = Boolean(notifyRollback);
-    }
-    if (sshAccess      !== undefined) {
-      if (appSettings.sshAccess !== Boolean(sshAccess)) changes.push(`sshAccess → ${sshAccess}`);
-      appSettings.sshAccess      = Boolean(sshAccess);
-    }
+    if (notifyDeploy   !== undefined) { if (appSettings.notifyDeploy   !== Boolean(notifyDeploy))   changes.push(`notifyDeploy → ${notifyDeploy}`);   appSettings.notifyDeploy   = Boolean(notifyDeploy);   }
+    if (notifyFailure  !== undefined) { if (appSettings.notifyFailure  !== Boolean(notifyFailure))  changes.push(`notifyFailure → ${notifyFailure}`);  appSettings.notifyFailure  = Boolean(notifyFailure);  }
+    if (notifyRollback !== undefined) { if (appSettings.notifyRollback !== Boolean(notifyRollback)) changes.push(`notifyRollback → ${notifyRollback}`); appSettings.notifyRollback = Boolean(notifyRollback); }
+    if (sshAccess      !== undefined) { if (appSettings.sshAccess      !== Boolean(sshAccess))      changes.push(`sshAccess → ${sshAccess}`);          appSettings.sshAccess      = Boolean(sshAccess);      }
 
     saveSettings(appSettings);
-
-    auditLog({
-      action:  'Settings saved',
-      category: 'settings',
-      details:  changes.length ? changes.join(', ') : 'no changes',
-      ip:       getClientIp(req),
-    });
-
-    console.log('[settings] ✅ Settings saved');
+    auditLog({ action: 'Settings saved', category: 'settings', details: changes.length ? changes.join(', ') : 'no changes', ip: getClientIp(req) });
     res.json({ ok: true });
   } catch (e) {
     auditLog({ action: 'Settings save failed', category: 'settings', details: e.message, ip: getClientIp(req), success: 0 });
-    console.error('[settings] Save error:', e.message);
     res.status(500).json({ ok: false, error: 'Failed to save settings' });
   }
 });
 
-// ── POST /api/settings/test-discord ──────────────────────────────────────
 app.post('/api/settings/test-discord', async (req, res) => {
-  const webhook = (req.body.webhook && req.body.webhook !== '***')
-    ? req.body.webhook
-    : appSettings.discordWebhook;
-
-  if (!webhook) {
-    return res.status(400).json({ ok: false, error: 'Discord webhook not configured' });
-  }
-
+  const webhook = (req.body.webhook && req.body.webhook !== '***') ? req.body.webhook : appSettings.discordWebhook;
+  if (!webhook) return res.status(400).json({ ok: false, error: 'Discord webhook not configured' });
   try {
     const { default: fetch } = await import('node-fetch');
     const r = await fetch(webhook, {
-      method: 'POST',
+      method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        embeds: [{
-          title: '✅ MyPresc Deploy — Test Notification',
-          description: 'Discord webhook connected successfully!',
-          color: 0x06b6d4,
-          timestamp: new Date().toISOString(),
-          footer: { text: 'MyPresc Deploy' },
-        }],
-      }),
+      body:    JSON.stringify({ embeds: [{ title: '✅ MyPresc Deploy — Test Notification', description: 'Discord webhook connected successfully!', color: 0x06b6d4, timestamp: new Date().toISOString(), footer: { text: 'MyPresc Deploy' } }] }),
     });
-
-    if (!r.ok) {
-      const text = await r.text().catch(() => '');
-      throw new Error(`Discord returned ${r.status}: ${text}`);
-    }
-
+    if (!r.ok) throw new Error(`Discord returned ${r.status}`);
     auditLog({ action: 'Discord test sent', category: 'integration', ip: getClientIp(req) });
-    console.log('[settings] ✅ Discord test message sent');
     res.json({ ok: true, message: 'Message sent to Discord!' });
   } catch (err) {
     auditLog({ action: 'Discord test failed', category: 'integration', details: err.message, ip: getClientIp(req), success: 0 });
-    console.error('[settings] Discord test error:', err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// ── POST /api/settings/test-slack ────────────────────────────────────────
 app.post('/api/settings/test-slack', async (req, res) => {
-  const webhook = (req.body.webhook && req.body.webhook !== '***')
-    ? req.body.webhook
-    : appSettings.slackWebhook;
-
-  if (!webhook) {
-    return res.status(400).json({ ok: false, error: 'Slack webhook not configured' });
-  }
-
+  const webhook = (req.body.webhook && req.body.webhook !== '***') ? req.body.webhook : appSettings.slackWebhook;
+  if (!webhook) return res.status(400).json({ ok: false, error: 'Slack webhook not configured' });
   try {
     const { default: fetch } = await import('node-fetch');
     const r = await fetch(webhook, {
-      method: 'POST',
+      method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        text: '✅ *MyPresc Deploy* — Test notification',
-        attachments: [{
-          color: '#06b6d4',
-          text: 'Slack webhook connected successfully!',
-          footer: 'MyPresc Deploy',
-          ts: Math.floor(Date.now() / 1000),
-        }],
-      }),
+      body:    JSON.stringify({ text: '✅ *MyPresc Deploy* — Test notification', attachments: [{ color: '#06b6d4', text: 'Slack webhook connected successfully!', footer: 'MyPresc Deploy', ts: Math.floor(Date.now() / 1000) }] }),
     });
-
-    if (!r.ok) {
-      const text = await r.text().catch(() => '');
-      throw new Error(`Slack returned ${r.status}: ${text}`);
-    }
-
+    if (!r.ok) throw new Error(`Slack returned ${r.status}`);
     auditLog({ action: 'Slack test sent', category: 'integration', ip: getClientIp(req) });
-    console.log('[settings] ✅ Slack test message sent');
     res.json({ ok: true, message: 'Message sent to Slack!' });
   } catch (err) {
     auditLog({ action: 'Slack test failed', category: 'integration', details: err.message, ip: getClientIp(req), success: 0 });
-    console.error('[settings] Slack test error:', err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// ── POST /api/settings/regenerate-token ──────────────────────────────────
 app.post('/api/settings/regenerate-token', (req, res) => {
   try {
     appSettings.apiToken = crypto.randomBytes(32).toString('hex');
     saveSettings(appSettings);
     auditLog({ action: 'API token regenerated', category: 'security', ip: getClientIp(req) });
-    console.log('[settings] ✅ API token regenerated');
     res.json({ ok: true, token: appSettings.apiToken });
   } catch (e) {
-    auditLog({ action: 'API token regen failed', category: 'security', details: e.message, ip: getClientIp(req), success: 0 });
-    console.error('[settings] Regen token error:', e.message);
     res.status(500).json({ ok: false, error: 'Failed to regenerate token' });
   }
 });
 
-// ── POST /api/settings/reset ──────────────────────────────────────────────
 app.post('/api/settings/reset', (req, res) => {
   try {
     appSettings = defaultSettings();
     saveSettings(appSettings);
     auditLog({ action: 'Settings reset to defaults', category: 'security', ip: getClientIp(req) });
-    console.log('[settings] ✅ Settings reset to defaults');
     res.json({ ok: true });
   } catch (e) {
-    auditLog({ action: 'Settings reset failed', category: 'security', details: e.message, ip: getClientIp(req), success: 0 });
-    console.error('[settings] Reset error:', e.message);
     res.status(500).json({ ok: false, error: 'Failed to reset settings' });
   }
 });
 
-// ── GET /api/settings/audit-log ───────────────────────────────────────────
 app.get('/api/settings/audit-log', (req, res) => {
-  const limit = Math.min(parseInt(req.query.limit) || 20, 100);
-
-  const rows = db.prepare(`
-    SELECT id, timestamp, action, category, details, ip, success
-    FROM   audit_log
-    ORDER  BY timestamp DESC
-    LIMIT  ?
-  `).all(limit);
-
-  const now = Date.now();
+  const limit   = Math.min(parseInt(req.query.limit) || 20, 100);
+  const rows    = db.prepare('SELECT id, timestamp, action, category, details, ip, success FROM audit_log ORDER BY timestamp DESC LIMIT ?').all(limit);
+  const now     = Date.now();
   const entries = rows.map(r => {
-    const diffMs  = now - r.timestamp;
-    const diffMin = Math.floor(diffMs / 60_000);
-    const diffH   = Math.floor(diffMs / 3_600_000);
-    const diffD   = Math.floor(diffMs / 86_400_000);
-
-    let timeAgo;
-    if (diffMin < 1)       timeAgo = 'just now';
-    else if (diffMin < 60) timeAgo = `${diffMin} min${diffMin > 1 ? 's' : ''} ago`;
-    else if (diffH   < 24) timeAgo = `${diffH} hour${diffH   > 1 ? 's' : ''} ago`;
-    else                   timeAgo = `${diffD} day${diffD    > 1 ? 's' : ''} ago`;
-
+    const diffMin = Math.floor((now - r.timestamp) / 60_000);
+    const diffH   = Math.floor((now - r.timestamp) / 3_600_000);
+    const diffD   = Math.floor((now - r.timestamp) / 86_400_000);
+    const timeAgo = diffMin < 1
+      ? 'just now'
+      : diffMin < 60
+        ? `${diffMin} min${diffMin > 1 ? 's' : ''} ago`
+        : diffH < 24
+          ? `${diffH} hour${diffH > 1 ? 's' : ''} ago`
+          : `${diffD} day${diffD > 1 ? 's' : ''} ago`;
     return { ...r, timeAgo };
   });
-
   res.json({ entries, total: entries.length });
 });
 
-// ── sendNotification ──────────────────────────────────────────────────────
 async function sendNotification(type, message) {
   const key = `notify${type}`;
   if (!appSettings[key]) return;
-
   let fetch;
-  try {
-    ({ default: fetch } = await import('node-fetch'));
-  } catch {
-    console.warn('[sendNotification] node-fetch not available');
-    return;
-  }
-
+  try { ({ default: fetch } = await import('node-fetch')); } catch { return; }
   const color = type === 'Failure' ? 0xef4444 : 0x10b981;
-
-  if (appSettings.discordWebhook) {
-    fetch(appSettings.discordWebhook, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        embeds: [{
-          title: `MyPresc Deploy — ${type}`,
-          description: message,
-          color,
-          timestamp: new Date().toISOString(),
-        }],
-      }),
-    }).catch(err => console.error('[sendNotification] Discord error:', err.message));
-  }
-
-  if (appSettings.slackWebhook) {
-    fetch(appSettings.slackWebhook, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: `*MyPresc Deploy — ${type}*\n${message}` }),
-    }).catch(err => console.error('[sendNotification] Slack error:', err.message));
-  }
+  if (appSettings.discordWebhook) fetch(appSettings.discordWebhook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ embeds: [{ title: `MyPresc Deploy — ${type}`, description: message, color, timestamp: new Date().toISOString() }] }) }).catch(() => {});
+  if (appSettings.slackWebhook)   fetch(appSettings.slackWebhook,   { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: `*MyPresc Deploy — ${type}*\n${message}` }) }).catch(() => {});
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
 // HEALTH
 // ══════════════════════════════════════════════════════════════════════════════
-
 app.get('/', (req, res) => {
   res.json({ status: 'ok', vps: Object.keys(vpsStore), timestamp: new Date().toISOString() });
 });

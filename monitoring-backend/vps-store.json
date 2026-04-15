@@ -1,10 +1,12 @@
 {
-  "production": {
-    "id": "production",
-    "name": "VPS production",
-    "host": "197.140.18.168",
+  "staging": {
+    "id": "staging",
+    "name": "vps staging",
+    "host": "173.212.248.243",
     "port": 22,
-    "username": "yasmine",
-    "password": "YasmineMypresc"
+    "username": "mypresc",
+    "password": "MyPrescription2025",
+    "githubRepo": "myprescription2026/mypresc-frontend",
+    "githubToken": "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"
   }
 }

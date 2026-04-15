@@ -25,12 +25,23 @@ export default function Sidebar() {
 
       {/* Brand */}
       <div className={`flex items-center gap-3 px-[14px] py-4 border-b flex-shrink-0 ${isDark ? 'border-[#1a2035]' : 'border-gray-200'}`}>
-        <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-[#3b82f6] to-[#8b5cf6] text-xs font-bold text-white shadow-lg shadow-blue-500/25">
-          MP
-        </div>
+       <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-[#0b1220] border border-blue-500/30 shadow-lg">
+       <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+          <circle cx="6" cy="12" r="2" fill="#3b82f6"/>
+          <circle cx="18" cy="6" r="2" fill="#3b82f6"/>
+          <circle cx="18" cy="18" r="2" fill="#3b82f6"/>
+          <path d="M8 12L16 6M8 12L16 18" stroke="#3b82f6" strokeWidth="1.5"/>
+       </svg>
+       </div>
         <div className="opacity-0 group-hover/sb:opacity-100 transition-opacity duration-150 whitespace-nowrap">
-          <div className={`text-xs font-bold leading-tight ${isDark ? 'text-white' : 'text-gray-900'}`}>MyPresc</div>
-          <div className="text-[9px] font-semibold uppercase tracking-widest text-[#3b82f6]">Deploy</div>
+         <div className="text-lg font-extrabold tracking-tight text-white leading-none">
+         Yam<span className="text-blue-300">Ops</span>
+         
+         </div>
+         <div className="text-[10px] font-medium uppercase tracking-wider text-blue-300/70
+           tracking-wider">
+          DevOps Platform
+         </div>
         </div>
       </div>
 
