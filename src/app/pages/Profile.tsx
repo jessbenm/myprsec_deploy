@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { useTheme } from '../theme-context';
+import { getCurrentUser } from '../auth-api';
 import {
   User, Mail, Phone, MapPin, Calendar, Shield,
-  Key, Bell, Globe, Edit2, Check, X,
+  Key, Bell, Globe, Edit2, Check, X, Loader,
 } from 'lucide-react';
 
 const activityLog = [
@@ -18,14 +19,51 @@ export default function Profile() {
   const { theme } = useTheme();
   const isDark = theme === 'dark';
   const [editingName, setEditingName] = useState(false);
-  const [name, setName] = useState('Yasmine A.');
-  const [tmpName, setTmpName] = useState(name);
+  const [loading, setLoading] = useState(true);
+  const [user, setUser] = useState<{ id: number; name: string; email: string; created_at: number; updated_at: number } | null>(null);
+  const [name, setName] = useState('');
+  const [tmpName, setTmpName] = useState('');
+
+  useEffect(() => {
+    const fetchUser = async () => {
+      try {
+        setLoading(true);
+        const response = await getCurrentUser();
+        if (response.success && response.data?.user) {
+          setUser(response.data.user);
+          setName(response.data.user.name);
+          setTmpName(response.data.user.name);
+        }
+      } catch (error) {
+        console.error('Failed to fetch user:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchUser();
+  }, []);
 
   const card    = isDark ? 'bg-[#0f172a] border border-[#1e293b]' : 'bg-white border border-gray-200';
   const subCard = isDark ? 'bg-[#0a0f1e] border border-[#1e293b]' : 'bg-gray-50 border border-gray-100';
   const txt     = isDark ? 'text-white' : 'text-gray-900';
   const muted   = isDark ? 'text-[#64748b]' : 'text-gray-400';
   const input   = isDark ? 'bg-[#1e293b] border-[#334155] text-white' : 'bg-gray-100 border-gray-200 text-gray-900';
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <Loader size={32} className="animate-spin text-[#3b82f6]" />
+      </div>
+    );
+  }
+
+  const joinedDate = user ? new Date(user.created_at).toLocaleDateString('en-US', { 
+    year: 'numeric', 
+    month: 'long', 
+    day: 'numeric' 
+  }) : 'Unknown';
+  
+  const initials = user ? user.name.split(' ').map(n => n[0]).join('').toUpperCase() : 'U';
 
   return (
     <div className="flex flex-col gap-4 text-sm max-w-4xl mx-auto">
@@ -37,7 +75,7 @@ export default function Profile() {
           {/* Avatar */}
           <div className="relative flex-shrink-0">
             <div className="h-16 w-16 rounded-2xl bg-gradient-to-br from-[#3b82f6] to-[#8b5cf6] flex items-center justify-center text-white text-xl font-bold shadow-lg shadow-blue-500/25">
-              YA
+              {initials}
             </div>
             <span className="absolute -bottom-1 -right-1 h-4 w-4 rounded-full bg-[#10b981] border-2"
               style={{ borderColor: isDark ? '#0f172a' : 'white' }} />
@@ -76,7 +114,7 @@ export default function Profile() {
               <span className="rounded-full bg-[#10b981]/15 px-2.5 py-0.5 text-[10px] font-semibold text-[#10b981]">
                 ● Online
               </span>
-              <span className={`text-[10px] ${muted}`}>Member since Jan 2024</span>
+              <span className={`text-[10px] ${muted}`}>Member since {joinedDate}</span>
             </div>
           </div>
 
@@ -105,11 +143,11 @@ export default function Profile() {
           </h2>
           <div className="space-y-3">
             {[
-              { icon: Mail,     label: 'Email',    value: 'yasmine@mypresc.dev'  },
+              { icon: Mail,     label: 'Email',    value: user?.email || 'N/A'  },
               { icon: Phone,    label: 'Phone',    value: '+213 555 123 456'     },
               { icon: MapPin,   label: 'Location', value: 'Oran, Algeria'        },
               { icon: Globe,    label: 'Timezone', value: 'UTC+1 (CET)'         },
-              { icon: Calendar, label: 'Joined',   value: 'January 15, 2024'    },
+              { icon: Calendar, label: 'Joined',   value: joinedDate    },
             ].map(({ icon: Icon, label, value }) => (
               <div key={label} className={`flex items-center justify-between rounded-lg px-3 py-2.5 ${subCard}`}>
                 <div className="flex items-center gap-2">

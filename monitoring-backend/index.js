@@ -5,13 +5,14 @@ const fs         = require('fs');
 const http       = require('http');
 const { WebSocketServer } = require('ws');
 const Database   = require('better-sqlite3');
+const crypto     = require('crypto');
 require('dotenv').config();
 
 const app    = express();
 const server = http.createServer(app);
 const PORT   = process.env.PORT || 3001;
 
-app.use(cors());
+app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -47,6 +48,7 @@ console.log(`📦 VPS chargés : ${Object.keys(vpsStore).join(', ') || 'aucun'}`
 // SQLITE — Historique des métriques + AUDIT LOG
 // ══════════════════════════════════════════════════════════════════════════════
 const db = new Database('./metrics-history.db');
+db.pragma('foreign_keys = ON');
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS metrics (
@@ -92,7 +94,246 @@ db.exec(`
     success     INTEGER DEFAULT 1
   );
   CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(timestamp);
+
+  CREATE TABLE IF NOT EXISTS auth_users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          TEXT    NOT NULL,
+    email         TEXT    NOT NULL UNIQUE,
+    password_hash TEXT    NOT NULL,
+    password_salt TEXT    NOT NULL,
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_auth_users_email ON auth_users(email);
+
+  CREATE TABLE IF NOT EXISTS auth_sessions (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id       INTEGER NOT NULL,
+    token         TEXT    NOT NULL UNIQUE,
+    expires_at    INTEGER NOT NULL,
+    created_at    INTEGER NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_auth_sessions_token ON auth_sessions(token);
+  CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id ON auth_sessions(user_id);
+  CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires_at ON auth_sessions(expires_at);
 `);
+
+const insertAuthUser = db.prepare(`
+  INSERT INTO auth_users (name, email, password_hash, password_salt, created_at, updated_at)
+  VALUES (?, ?, ?, ?, ?, ?)
+`);
+const selectAuthUserByEmail = db.prepare(`
+  SELECT id, name, email, password_hash, password_salt, created_at, updated_at
+  FROM auth_users
+  WHERE email = ?
+`);
+const selectAuthUserById = db.prepare(`
+  SELECT id, name, email, created_at, updated_at
+  FROM auth_users
+  WHERE id = ?
+`);
+const updateAuthUserPassword = db.prepare(`
+  UPDATE auth_users
+  SET password_hash = ?, password_salt = ?, updated_at = ?
+  WHERE id = ?
+`);
+const deleteAuthUser = db.prepare('DELETE FROM auth_users WHERE id = ?');
+const insertAuthSession = db.prepare(`
+  INSERT INTO auth_sessions (user_id, token, expires_at, created_at)
+  VALUES (?, ?, ?, ?)
+`);
+const selectAuthSession = db.prepare(`
+  SELECT s.id, s.user_id, s.token, s.expires_at, u.name, u.email, u.created_at, u.updated_at
+  FROM auth_sessions s
+  JOIN auth_users u ON u.id = s.user_id
+  WHERE s.token = ?
+`);
+const deleteAuthSessionByToken = db.prepare('DELETE FROM auth_sessions WHERE token = ?');
+const deleteExpiredAuthSessions = db.prepare('DELETE FROM auth_sessions WHERE expires_at < ?');
+
+function cleanupExpiredAuthSessions() {
+  try {
+    deleteExpiredAuthSessions.run(Date.now());
+  } catch (error) {
+    console.error('[auth] cleanup failed:', error.message);
+  }
+}
+
+cleanupExpiredAuthSessions();
+setInterval(cleanupExpiredAuthSessions, 60 * 60 * 1000);
+
+function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
+  const hash = crypto.pbkdf2Sync(password, salt, 120000, 64, 'sha512').toString('hex');
+  return { salt, hash };
+}
+
+function verifyPassword(password, salt, expectedHash) {
+  const { hash } = hashPassword(password, salt);
+  return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(expectedHash, 'hex'));
+}
+
+function createAuthToken() {
+  return crypto.randomBytes(32).toString('hex');
+}
+
+function setAuthCookie(res, token) {
+  const cookieParts = [
+    `mp_session=${token}`,
+    'HttpOnly',
+    'Path=/',
+    'SameSite=Lax',
+  ];
+  if (process.env.NODE_ENV === 'production') cookieParts.push('Secure');
+  cookieParts.push(`Max-Age=${60 * 60 * 24}`);
+  res.setHeader('Set-Cookie', cookieParts.join('; '));
+}
+
+function clearAuthCookie(res) {
+  res.setHeader('Set-Cookie', 'mp_session=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0');
+}
+
+function parseCookies(req) {
+  const header = req.headers.cookie || '';
+  return header.split(';').reduce((acc, part) => {
+    const [rawKey, ...rawValue] = part.trim().split('=');
+    if (!rawKey) return acc;
+    acc[rawKey] = decodeURIComponent(rawValue.join('='));
+    return acc;
+  }, {});
+}
+
+function getSessionUser(req) {
+  const cookies = parseCookies(req);
+  const token = cookies.mp_session;
+  if (!token) return null;
+
+  const session = selectAuthSession.get(token);
+  if (!session) return null;
+  if (session.expires_at < Date.now()) {
+    deleteAuthSessionByToken.run(token);
+    return null;
+  }
+
+  return {
+    sessionId: session.id,
+    token: session.token,
+    user: {
+      id: session.user_id,
+      name: session.name,
+      email: session.email,
+      created_at: session.created_at,
+      updated_at: session.updated_at,
+    },
+  };
+}
+
+function requireAuth(req, res, next) {
+  const session = getSessionUser(req);
+  if (!session) {
+    return res.status(401).json({ success: false, error: 'Authentication required' });
+  }
+  req.authSession = session;
+  next();
+}
+
+app.post('/api/auth/signup', (req, res) => {
+  try {
+    const { name, email, password, confirmPassword } = req.body || {};
+
+    if (!name || !email || !password || !confirmPassword) {
+      return res.status(400).json({ success: false, error: 'name, email, password and confirmPassword are required' });
+    }
+
+    const normalizedEmail = String(email).trim().toLowerCase();
+    const trimmedName = String(name).trim();
+    const strongPassword = String(password);
+
+    if (strongPassword.length < 10) {
+      return res.status(400).json({ success: false, error: 'Password must be at least 10 characters long' });
+    }
+
+    if (strongPassword !== String(confirmPassword)) {
+      return res.status(400).json({ success: false, error: 'Passwords do not match' });
+    }
+
+    const existingUser = selectAuthUserByEmail.get(normalizedEmail);
+    if (existingUser) {
+      return res.status(409).json({ success: false, error: 'This email is already registered' });
+    }
+
+    const { salt, hash } = hashPassword(strongPassword);
+    const now = Date.now();
+    const result = insertAuthUser.run(trimmedName, normalizedEmail, hash, salt, now, now);
+    const newUser = selectAuthUserById.get(result.lastInsertRowid);
+
+    const token = createAuthToken();
+    insertAuthSession.run(newUser.id, token, now + 24 * 60 * 60 * 1000, now);
+    setAuthCookie(res, token);
+
+    return res.status(201).json({
+      success: true,
+      message: 'Account created successfully',
+      data: { user: newUser },
+    });
+  } catch (error) {
+    console.error('[auth/signup]', error);
+    return res.status(500).json({ success: false, error: 'Failed to create account' });
+  }
+});
+
+app.post('/api/auth/login', (req, res) => {
+  try {
+    const { email, password } = req.body || {};
+
+    if (!email || !password) {
+      return res.status(400).json({ success: false, error: 'email and password are required' });
+    }
+
+    const normalizedEmail = String(email).trim().toLowerCase();
+    const user = selectAuthUserByEmail.get(normalizedEmail);
+
+    if (!user) {
+      return res.status(401).json({ success: false, error: 'Invalid email or password' });
+    }
+
+    const ok = verifyPassword(String(password), user.password_salt, user.password_hash);
+    if (!ok) {
+      return res.status(401).json({ success: false, error: 'Invalid email or password' });
+    }
+
+    const token = createAuthToken();
+    const now = Date.now();
+    insertAuthSession.run(user.id, token, now + 24 * 60 * 60 * 1000, now);
+    setAuthCookie(res, token);
+
+    return res.json({
+      success: true,
+      message: 'Login successful',
+      data: { user: { id: user.id, name: user.name, email: user.email, created_at: user.created_at, updated_at: user.updated_at } },
+    });
+  } catch (error) {
+    console.error('[auth/login]', error);
+    return res.status(500).json({ success: false, error: 'Failed to login' });
+  }
+});
+
+app.get('/api/auth/me', requireAuth, (req, res) => {
+  return res.json({ success: true, data: { user: req.authSession.user } });
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  try {
+    const cookies = parseCookies(req);
+    const token = cookies.mp_session;
+    if (token) deleteAuthSessionByToken.run(token);
+    clearAuthCookie(res);
+    return res.json({ success: true, message: 'Logged out successfully' });
+  } catch (error) {
+    console.error('[auth/logout]', error);
+    return res.status(500).json({ success: false, error: 'Failed to logout' });
+  }
+});
 
 function cleanOldData() {
   const cutoff      = Date.now() - 31 * 24 * 60 * 60 * 1000;
@@ -905,180 +1146,12 @@ wssById.on('connection', (ws, _request, vpsId) => {
   });
 });
 
-// ══════════════════════════════════════════════════════════════════════════════
-// SETTINGS
-// ══════════════════════════════════════════════════════════════════════════════
-const SETTINGS_FILE = './settings.json';
-const crypto        = require('crypto');
+// ...existing code...
 
-function loadSettings() {
-  try {
-    if (fs.existsSync(SETTINGS_FILE))
-      return JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'));
-  } catch (e) {
-    console.error('[settings] Failed to load settings.json:', e.message);
-  }
-  return defaultSettings();
-}
-
-function defaultSettings() {
-  return {
-    discordWebhook: '',
-    slackWebhook:   '',
-    notifyDeploy:   true,
-    notifyFailure:  true,
-    notifyRollback: true,
-    apiToken:       crypto.randomBytes(32).toString('hex'),
-    sshAccess:      true,
-  };
-}
-
-function saveSettings(s) {
-  try {
-    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(s, null, 2));
-  } catch (e) {
-    console.error('[settings] Failed to write settings.json:', e.message);
-    throw e;
-  }
-}
-
-let appSettings = loadSettings();
-
-app.get('/api/settings', (req, res) => {
-  res.json({
-    discordWebhook: appSettings.discordWebhook ? '***' : '',
-    slackWebhook:   appSettings.slackWebhook   ? '***' : '',
-    notifyDeploy:   appSettings.notifyDeploy,
-    notifyFailure:  appSettings.notifyFailure,
-    notifyRollback: appSettings.notifyRollback,
-    apiToken:       appSettings.apiToken,
-    sshAccess:      appSettings.sshAccess,
-  });
-});
-
-app.post('/api/settings', (req, res) => {
-  try {
-    const { discordWebhook, slackWebhook, notifyDeploy, notifyFailure, notifyRollback, sshAccess } = req.body;
-    const changes = [];
-
-    if (discordWebhook && discordWebhook !== '***') { appSettings.discordWebhook = discordWebhook; changes.push('Discord webhook updated'); }
-    if (slackWebhook   && slackWebhook   !== '***') { appSettings.slackWebhook   = slackWebhook;   changes.push('Slack webhook updated'); }
-
-    if (notifyDeploy   !== undefined) { if (appSettings.notifyDeploy   !== Boolean(notifyDeploy))   changes.push(`notifyDeploy → ${notifyDeploy}`);   appSettings.notifyDeploy   = Boolean(notifyDeploy);   }
-    if (notifyFailure  !== undefined) { if (appSettings.notifyFailure  !== Boolean(notifyFailure))  changes.push(`notifyFailure → ${notifyFailure}`);  appSettings.notifyFailure  = Boolean(notifyFailure);  }
-    if (notifyRollback !== undefined) { if (appSettings.notifyRollback !== Boolean(notifyRollback)) changes.push(`notifyRollback → ${notifyRollback}`); appSettings.notifyRollback = Boolean(notifyRollback); }
-    if (sshAccess      !== undefined) { if (appSettings.sshAccess      !== Boolean(sshAccess))      changes.push(`sshAccess → ${sshAccess}`);          appSettings.sshAccess      = Boolean(sshAccess);      }
-
-    saveSettings(appSettings);
-    auditLog({ action: 'Settings saved', category: 'settings', details: changes.length ? changes.join(', ') : 'no changes', ip: getClientIp(req) });
-    res.json({ ok: true });
-  } catch (e) {
-    auditLog({ action: 'Settings save failed', category: 'settings', details: e.message, ip: getClientIp(req), success: 0 });
-    res.status(500).json({ ok: false, error: 'Failed to save settings' });
-  }
-});
-
-app.post('/api/settings/test-discord', async (req, res) => {
-  const webhook = (req.body.webhook && req.body.webhook !== '***') ? req.body.webhook : appSettings.discordWebhook;
-  if (!webhook) return res.status(400).json({ ok: false, error: 'Discord webhook not configured' });
-  try {
-    const { default: fetch } = await import('node-fetch');
-    const r = await fetch(webhook, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ embeds: [{ title: '✅ MyPresc Deploy — Test Notification', description: 'Discord webhook connected successfully!', color: 0x06b6d4, timestamp: new Date().toISOString(), footer: { text: 'MyPresc Deploy' } }] }),
-    });
-    if (!r.ok) throw new Error(`Discord returned ${r.status}`);
-    auditLog({ action: 'Discord test sent', category: 'integration', ip: getClientIp(req) });
-    res.json({ ok: true, message: 'Message sent to Discord!' });
-  } catch (err) {
-    auditLog({ action: 'Discord test failed', category: 'integration', details: err.message, ip: getClientIp(req), success: 0 });
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-app.post('/api/settings/test-slack', async (req, res) => {
-  const webhook = (req.body.webhook && req.body.webhook !== '***') ? req.body.webhook : appSettings.slackWebhook;
-  if (!webhook) return res.status(400).json({ ok: false, error: 'Slack webhook not configured' });
-  try {
-    const { default: fetch } = await import('node-fetch');
-    const r = await fetch(webhook, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ text: '✅ *MyPresc Deploy* — Test notification', attachments: [{ color: '#06b6d4', text: 'Slack webhook connected successfully!', footer: 'MyPresc Deploy', ts: Math.floor(Date.now() / 1000) }] }),
-    });
-    if (!r.ok) throw new Error(`Slack returned ${r.status}`);
-    auditLog({ action: 'Slack test sent', category: 'integration', ip: getClientIp(req) });
-    res.json({ ok: true, message: 'Message sent to Slack!' });
-  } catch (err) {
-    auditLog({ action: 'Slack test failed', category: 'integration', details: err.message, ip: getClientIp(req), success: 0 });
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-app.post('/api/settings/regenerate-token', (req, res) => {
-  try {
-    appSettings.apiToken = crypto.randomBytes(32).toString('hex');
-    saveSettings(appSettings);
-    auditLog({ action: 'API token regenerated', category: 'security', ip: getClientIp(req) });
-    res.json({ ok: true, token: appSettings.apiToken });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: 'Failed to regenerate token' });
-  }
-});
-
-app.post('/api/settings/reset', (req, res) => {
-  try {
-    appSettings = defaultSettings();
-    saveSettings(appSettings);
-    auditLog({ action: 'Settings reset to defaults', category: 'security', ip: getClientIp(req) });
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: 'Failed to reset settings' });
-  }
-});
-
-app.get('/api/settings/audit-log', (req, res) => {
-  const limit   = Math.min(parseInt(req.query.limit) || 20, 100);
-  const rows    = db.prepare('SELECT id, timestamp, action, category, details, ip, success FROM audit_log ORDER BY timestamp DESC LIMIT ?').all(limit);
-  const now     = Date.now();
-  const entries = rows.map(r => {
-    const diffMin = Math.floor((now - r.timestamp) / 60_000);
-    const diffH   = Math.floor((now - r.timestamp) / 3_600_000);
-    const diffD   = Math.floor((now - r.timestamp) / 86_400_000);
-    const timeAgo = diffMin < 1
-      ? 'just now'
-      : diffMin < 60
-        ? `${diffMin} min${diffMin > 1 ? 's' : ''} ago`
-        : diffH < 24
-          ? `${diffH} hour${diffH > 1 ? 's' : ''} ago`
-          : `${diffD} day${diffD > 1 ? 's' : ''} ago`;
-    return { ...r, timeAgo };
-  });
-  res.json({ entries, total: entries.length });
-});
-
-async function sendNotification(type, message) {
-  const key = `notify${type}`;
-  if (!appSettings[key]) return;
-  let fetch;
-  try { ({ default: fetch } = await import('node-fetch')); } catch { return; }
-  const color = type === 'Failure' ? 0xef4444 : 0x10b981;
-  if (appSettings.discordWebhook) fetch(appSettings.discordWebhook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ embeds: [{ title: `MyPresc Deploy — ${type}`, description: message, color, timestamp: new Date().toISOString() }] }) }).catch(() => {});
-  if (appSettings.slackWebhook)   fetch(appSettings.slackWebhook,   { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: `*MyPresc Deploy — ${type}*\n${message}` }) }).catch(() => {});
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// HEALTH
-// ══════════════════════════════════════════════════════════════════════════════
-app.get('/', (req, res) => {
-  res.json({ status: 'ok', vps: Object.keys(vpsStore), timestamp: new Date().toISOString() });
+app.get('/api/health', (_req, res) => {
+  res.json({ ok: true, ts: Date.now() });
 });
 
 server.listen(PORT, () => {
-  console.log(`\n🚀 MyPresc Backend    → http://localhost:${PORT}`);
-  console.log(`🔌 WebSocket Terminal → ws://localhost:${PORT}/terminal/:id`);
-  console.log(`🗄️  SQLite history     → metrics-history.db`);
-  console.log(`📋 Audit log          → /api/settings/audit-log`);
-  console.log(`   Collecte toutes les 30s — historique 31 jours\n`);
+  console.log(`✅ Backend en écoute sur http://localhost:${PORT}`);
 });

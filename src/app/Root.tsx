@@ -1,13 +1,35 @@
+import { useEffect, useState } from 'react';
 import { Outlet, Navigate } from 'react-router';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import { useTheme } from './theme-context';
+import { getCurrentUser } from './auth-api';
 
 export default function Root() {
   const { theme } = useTheme();
-  
-  // Check authentication
-  const isAuth = localStorage.getItem('mp_auth') === 'true';
+  const [isAuth, setIsAuth] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    getCurrentUser()
+      .then(() => {
+        if (active) setIsAuth(true);
+      })
+      .catch(() => {
+        if (active) setIsAuth(false);
+      });
+
+    return () => { active = false; };
+  }, []);
+
+  if (isAuth === null) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-[#06080f] text-sm text-slate-300">
+        Checking session...
+      </div>
+    );
+  }
+
   if (!isAuth) return <Navigate to="/login" replace />;
   
   return (

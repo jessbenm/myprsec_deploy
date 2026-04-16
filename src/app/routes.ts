@@ -1,6 +1,7 @@
 import { createBrowserRouter } from "react-router";
 import Root from "./Root";
 import Login from "./pages/Login";
+import Signup from "./pages/Signup";
 import Dashboard from "./pages/Dashboard";
 import Pipeline from "./pages/Pipeline";
 import Monitoring from "./pages/Monitoring";
@@ -14,6 +15,10 @@ export const router = createBrowserRouter([
   {
     path: "/login",
     Component: Login,
+  },
+  {
+    path: "/signup",
+    Component: Signup,
   },
   {
     path: "/",

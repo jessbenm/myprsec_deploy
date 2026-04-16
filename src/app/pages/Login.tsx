@@ -1,6 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
 import { Eye, EyeOff, Github, Chrome, Loader2 } from 'lucide-react';
+import { useNavigate } from 'react-router';
+import { getCurrentUser, loginUser } from '../auth-api';
 
 export default function Login() {
   const [email, setEmail]       = useState('');
@@ -8,17 +10,45 @@ export default function Login() {
   const [showPass, setShowPass] = useState(false);
   const [loading, setLoading]   = useState(false);
   const [error, setError]       = useState('');
+  const [checking, setChecking] = useState(true);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    let active = true;
+    getCurrentUser()
+      .then(() => {
+        if (active) navigate('/', { replace: true });
+      })
+      .catch(() => {
+        if (active) setChecking(false);
+      });
+
+    return () => { active = false; };
+  }, [navigate]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     if (!email || !password) { setError('Please fill in all fields.'); return; }
     setLoading(true);
-    await new Promise(r => setTimeout(r, 1500));
-    setLoading(false);
-    localStorage.setItem('mp_auth', 'true');
-    window.location.href = '/';
+    try {
+      await loginUser({ email, password });
+      navigate('/', { replace: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to login');
+      setLoading(false);
+    }
   };
+
+  if (checking) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#06080f] text-white">
+        <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/5 px-5 py-4 text-sm text-slate-300">
+          <Loader2 size={16} className="animate-spin text-sky-400" /> Checking session...
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#06080f]">
@@ -105,8 +135,8 @@ export default function Login() {
             <div>
               <div className="mb-1.5 flex items-center justify-between">
                 <label className="text-xs font-medium text-[#94a3b8]">Password</label>
-                <button type="button" className="text-[11px] text-[#3b82f6] hover:underline">
-                  Forgot password?
+                  <button type="button" onClick={() => navigate('/signup')} className="text-[11px] text-[#3b82f6] hover:underline">
+                    Create account
                 </button>
               </div>
               <div className="relative">
@@ -164,7 +194,7 @@ export default function Login() {
         {/* Footer */}
         <p className="mt-6 text-center text-[11px] text-[#334155]">
           Don't have an account?{' '}
-          <button className="text-[#3b82f6] hover:underline font-medium">Contact admin</button>
+          <button onClick={() => navigate('/signup')} className="text-[#3b82f6] hover:underline font-medium">Create one</button>
         </p>
 
         <p className="mt-3 text-center text-[10px] text-[#1e293b]">
