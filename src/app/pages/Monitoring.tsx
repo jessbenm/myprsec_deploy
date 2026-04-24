@@ -12,7 +12,7 @@ import {
   Globe2, Rocket, Database, Zap, AlertCircle,
 } from 'lucide-react';
 
-const BACKEND_URL = 'http://localhost:3001';
+import { apiFetch } from '../lib/api';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Container {
@@ -109,9 +109,20 @@ export default function Monitoring() {
 
   // ── Fetch all data ──────────────────────────────────────────────────────────
   const fetchAll = async () => {
+    if (!environment) {
+      setMetrics(null);
+      setLogs([]);
+      setAlerts([]);
+      setResponsePts([]);
+      setRequestPts([]);
+      setCurrentRpm(0);
+      setError('No VPS configured for this account yet');
+      setLoading(false);
+      return;
+    }
     try {
       // Métriques principales (obligatoire)
-      const res = await fetch(`${BACKEND_URL}/api/metrics/${environment}`);
+      const res = await apiFetch(`/api/metrics/${environment}`);
       if (!res.ok) throw new Error('VPS non trouvé — ajoutez le VPS d\'abord');
       const data: MetricsData = await res.json();
       setMetrics(data);
@@ -130,11 +141,11 @@ export default function Monitoring() {
       setMemHistory(prev => [...prev.slice(-24), { v: parseFloat((totalMem / 1024).toFixed(2)) }]);
 
       // Autres données en parallèle (silencieux si erreur)
-      const [logsRes, alertsRes, responseRes, requestsRes] = await Promise.allSettled([
-        fetch(`${BACKEND_URL}/api/logs/${environment}`),
-        fetch(`${BACKEND_URL}/api/alerts/${environment}`),
-        fetch(`${BACKEND_URL}/api/response-time/${environment}`),
-        fetch(`${BACKEND_URL}/api/requests/${environment}`),
+      // TODO: /api/requests/:id not yet implemented — should return { current_rpm, points }
+      const [logsRes, alertsRes, responseRes] = await Promise.allSettled([
+        apiFetch(`/api/logs/${environment}`),
+        apiFetch(`/api/alerts/${environment}`),
+        apiFetch(`/api/response-time/${environment}`),
       ]);
 
       if (logsRes.status === 'fulfilled' && logsRes.value.ok) {
@@ -150,13 +161,6 @@ export default function Monitoring() {
       if (responseRes.status === 'fulfilled' && responseRes.value.ok) {
         const d = await responseRes.value.json();
         setResponsePts(d.points || []);
-      }
-
-      if (requestsRes.status === 'fulfilled' && requestsRes.value.ok) {
-        const d = await requestsRes.value.json();
-        setCurrentRpm(d.current_rpm || 0);
-        setRequestPts(d.points || []);
-        setReqHistory(prev => [...prev.slice(-24), { v: d.current_rpm || 0 }]);
       }
 
     } catch (err: any) {
@@ -220,7 +224,7 @@ export default function Monitoring() {
           )}
         </div>
         <div className="flex items-center gap-3 text-[11px] text-gray-400">
-          <span className="capitalize font-medium text-[#3b82f6]">{environment}</span>
+          <span className="capitalize font-medium text-[#3b82f6]">{environment || 'No VPS'}</span>
           <span>·</span>
           <span>Last updated {lastUpdated}s ago</span>
           <span>·</span>

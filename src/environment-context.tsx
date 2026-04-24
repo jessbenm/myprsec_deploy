@@ -6,12 +6,12 @@ const EnvironmentContext = createContext<{
   environment: Environment;
   setEnvironment: (env: Environment) => void;
 }>({
-  environment: 'staging',
+  environment: '',
   setEnvironment: () => {},
 });
 
 export function EnvironmentProvider({ children }: { children: React.ReactNode }) {
-  const [environment, setEnvironment] = useState<Environment>('staging');
+  const [environment, setEnvironment] = useState<Environment>('');
   return (
     <EnvironmentContext.Provider value={{ environment, setEnvironment }}>
       {children}

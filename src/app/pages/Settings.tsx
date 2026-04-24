@@ -3,7 +3,7 @@ import { toast } from 'sonner';
 import { useTheme } from '../theme-context';
 import { Loader2, CheckCircle, Copy, Eye, EyeOff, AlertTriangle, RefreshCw } from 'lucide-react';
 
-const BACKEND_URL = 'http://localhost:3001';
+import { apiFetch } from '../lib/api';
 
 // ── Couleurs par catégorie d'action ──────────────────────────────────────────
 const CATEGORY_META: Record<string, { color: string; icon: string; initials: string }> = {
@@ -304,7 +304,7 @@ export default function Settings() {
   // ── Load settings ─────────────────────────────────────────────────────────
   const loadSettings = useCallback(() => {
     setLoadError(false);
-    fetch(`${BACKEND_URL}/api/settings`)
+    apiFetch(`/api/settings`)
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then(data => {
         setNotifyDeploy(data.notifyDeploy ?? true);
@@ -325,7 +325,7 @@ export default function Settings() {
   const loadAuditLog = useCallback(async (showSpinner = false) => {
     if (showSpinner) setAuditRefreshing(true);
     try {
-      const r = await fetch(`${BACKEND_URL}/api/settings/audit-log?limit=10`);
+      const r = await apiFetch(`/api/settings/audit-log?limit=10`);
       if (!r.ok) throw new Error();
       const data = await r.json();
       setAuditEntries(data.entries ?? []);
@@ -351,9 +351,8 @@ export default function Settings() {
   const handleSave = async () => {
     setSaving(true);
     try {
-      const res = await fetch(`${BACKEND_URL}/api/settings`, {
+      const res = await apiFetch(`/api/settings`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           discordWebhook: discordWebhook || undefined,
           slackWebhook:   slackWebhook   || undefined,
@@ -380,8 +379,8 @@ export default function Settings() {
     try {
       const body: Record<string, string> = {};
       if (discordWebhook) body.webhook = discordWebhook;
-      const res  = await fetch(`${BACKEND_URL}/api/settings/test-discord`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      const res  = await apiFetch(`/api/settings/test-discord`, {
+        method: 'POST', body: JSON.stringify(body),
       });
       const data = await res.json();
       if (data.ok) { toast.success('Message sent on Discord! ✅'); setTimeout(() => loadAuditLog(), 300); }
@@ -397,8 +396,8 @@ export default function Settings() {
     try {
       const body: Record<string, string> = {};
       if (slackWebhook) body.webhook = slackWebhook;
-      const res  = await fetch(`${BACKEND_URL}/api/settings/test-slack`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      const res  = await apiFetch(`/api/settings/test-slack`, {
+        method: 'POST', body: JSON.stringify(body),
       });
       const data = await res.json();
       if (data.ok) { toast.success('Message sent on Slack! ✅'); setTimeout(() => loadAuditLog(), 300); }
@@ -411,7 +410,7 @@ export default function Settings() {
   const regenToken = async () => {
     setRegenLoading(true);
     try {
-      const res  = await fetch(`${BACKEND_URL}/api/settings/regenerate-token`, { method: 'POST' });
+      const res  = await apiFetch(`/api/settings/regenerate-token`, { method: 'POST' });
       if (!res.ok) throw new Error();
       const data = await res.json();
       setApiToken(data.token);
@@ -425,7 +424,7 @@ export default function Settings() {
   const handleReset = async () => {
     setResetLoading(true);
     try {
-      const res = await fetch(`${BACKEND_URL}/api/settings/reset`, { method: 'POST' });
+      const res = await apiFetch(`/api/settings/reset`, { method: 'POST' });
       if (!res.ok) throw new Error();
       toast.success('Settings reset to defaults');
       setShowResetModal(false);

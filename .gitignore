@@ -21,6 +21,16 @@ build/
 .env.local
 .env.*.local
 
+# Secrets — never commit these
+monitoring-backend/vps-store.json
+monitoring-backend/settings.json
+monitoring-backend/*.backup.json
+
+# SQLite database files
+*.db
+*.db-shm
+*.db-wal
+
 # Logs
 *.log
 npm-debug.log*

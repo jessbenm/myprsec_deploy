@@ -3,8 +3,7 @@ import { Bell, ChevronDown } from 'lucide-react';
 import { useLocation } from 'react-router';
 import { useTheme } from '../theme-context';
 import { useEnvironment } from '../../environment-context';
-
-const BACKEND_URL = 'http://localhost:3001';
+import { apiFetch } from '../lib/api';
 
 const pageTitles: Record<string, string> = {
   '/':           'Dashboard Overview',
@@ -37,23 +36,26 @@ export default function Header() {
   useEffect(() => {
     const load = async () => {
       try {
-        const res  = await fetch(`${BACKEND_URL}/api/vps`);
+        const res  = await apiFetch(`/api/vps`);
         const data = await res.json();
         const list: VPS[] = Array.isArray(data) ? data : Object.values(data);
         setVpsList(list);
         // Si l'environnement actuel n'existe plus, switcher sur le premier
         if (list.length > 0 && !list.find(v => v.id === environment)) {
           setEnvironment(list[0].id);
+        } else if (list.length === 0 && environment) {
+          setEnvironment('');
         }
       } catch {
         setVpsList([]);
+        if (environment) setEnvironment('');
       }
     };
     load();
     // Recharger toutes les 10s pour détecter les nouveaux VPS
     const t = setInterval(load, 10000);
     return () => clearInterval(t);
-  }, []);
+  }, [environment, setEnvironment]);
 
   const currentVps = vpsList.find(v => v.id === environment);
 
@@ -125,7 +127,7 @@ export default function Header() {
                 boxShadow: '0 2px 10px rgba(6,182,212,0.35)',
               }}
             >
-              {currentVps?.name || environment}
+              {currentVps?.name || environment || 'No VPS'}
               <ChevronDown size={11} />
             </button>
             {showDropdown && (

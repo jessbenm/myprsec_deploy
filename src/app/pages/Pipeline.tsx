@@ -4,7 +4,7 @@ import { motion } from 'motion/react';
 import { useTheme } from '../theme-context';
 import { useEnvironment } from '../../environment-context';
 
-const BACKEND_URL = 'http://localhost:3001';
+import { apiFetch } from '../lib/api';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Run {
@@ -76,8 +76,14 @@ export default function Pipeline() {
 
   // ── Fetch pipeline ──────────────────────────────────────────────────────────
   const fetchPipeline = async () => {
+    if (!environment) {
+      setPipelineData(null);
+      setError('No VPS configured for this account yet');
+      setLoading(false);
+      return;
+    }
     try {
-      const res = await fetch(`${BACKEND_URL}/api/pipeline/${environment}`);
+      const res = await apiFetch(`/api/pipeline/${environment}`);
       if (!res.ok) {
         const d = await res.json();
         throw new Error(d.error);
@@ -110,9 +116,8 @@ export default function Pipeline() {
   const handleTrigger = async (branch = 'main') => {
     setTriggering(true);
     try {
-      const res  = await fetch(`${BACKEND_URL}/api/pipeline/${environment}/trigger`, {
+      const res  = await apiFetch(`/api/pipeline/${environment}/trigger`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ workflow: 'deploy.yml', branch }),
       });
       const data = await res.json();
@@ -133,7 +138,7 @@ export default function Pipeline() {
   const handleRerun = async (runId: number) => {
     setRerunning(runId);
     try {
-      await fetch(`${BACKEND_URL}/api/pipeline/${environment}/rerun/${runId}`, { method: 'POST' });
+      await apiFetch(`/api/pipeline/${environment}/rerun/${runId}`, { method: 'POST' });
       setTimeout(fetchPipeline, 2000);
     } catch {}
     finally { setRerunning(null); }
@@ -166,7 +171,7 @@ export default function Pipeline() {
         <div className="flex items-center gap-3">
           <span className="h-2 w-2 rounded-full bg-[#10b981]" style={{ boxShadow: '0 0 6px #10b981' }} />
           <span className="text-xs text-gray-400">Pipeline:</span>
-          <span className="text-xs font-semibold text-[#06b6d4] capitalize">{environment}</span>
+          <span className="text-xs font-semibold text-[#06b6d4] capitalize">{environment || 'No VPS'}</span>
           {pipelineData?.repo && (
             <>
               <span className="text-gray-600">·</span>

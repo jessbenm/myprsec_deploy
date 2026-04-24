@@ -5,7 +5,7 @@ import Terminal from '../components/Terminal';
 import CostEstimator from '../components/CostEstimator';
 import ManageModal from '../components/ManageModal.tsx';
 
-const BACKEND_URL = 'http://localhost:3001';
+import { apiFetch } from '../lib/api';
 
 interface VPS {
   id: string;
@@ -16,6 +16,7 @@ interface VPS {
   cpu?: number;
   ram?: { used: number; total: number };
   status?: 'healthy' | 'warning' | 'error' | 'loading';
+  sshConfigured?: boolean;
 }
 
 // ── Nettoyer l'URL GitHub → "owner/repo" ──────────────────────────────────────
@@ -53,7 +54,7 @@ export default function Servers() {
   // ── Charger les VPS ─────────────────────────────────────────────────────────
   const loadVps = async () => {
     try {
-      const res  = await fetch(`${BACKEND_URL}/api/vps`);
+      const res  = await apiFetch(`/api/vps`);
       const data = await res.json();
       const list: VPS[] = Array.isArray(data) ? data : Object.values(data as Record<string, any>);
       setVpsList(list.map(v => ({ ...v, status: 'loading' })));
@@ -66,7 +67,7 @@ export default function Servers() {
   // ── Charger les métriques d'un VPS ──────────────────────────────────────────
   const loadMetrics = async (id: string) => {
     try {
-      const res  = await fetch(`${BACKEND_URL}/api/metrics/${id}`);
+      const res  = await apiFetch(`/api/metrics/${id}`);
       if (!res.ok) { updateVpsStatus(id, 'error'); return; }
       const data = await res.json();
 
@@ -102,14 +103,13 @@ export default function Servers() {
 
   // ── Ajouter un VPS ──────────────────────────────────────────────────────────
   const handleAddVps = async () => {
-    if (!form.id || !form.host || !form.username || !form.password) {
-      setFormError('Tous les champs sont requis'); return;
+    if (!form.id || !form.host || !form.username) {
+      setFormError('L\'ID, l\'host et le username sont requis'); return;
     }
     setFormLoading(true); setFormError(null);
     try {
-      const res = await fetch(`${BACKEND_URL}/api/vps`, {
+      const res = await apiFetch(`/api/vps`, {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({
           ...form,
           port:        parseInt(form.port) || 22,
@@ -135,16 +135,19 @@ export default function Servers() {
   // ── Tester la connexion SSH ─────────────────────────────────────────────────
   const handleTest = async () => {
     if (!form.id || !form.host || !form.username || !form.password) {
-      setFormError('Remplissez tous les champs avant de tester'); return;
+      setFormError('Remplissez host, username et mot de passe SSH pour tester'); return;
     }
     setTestLoading(true); setTestResult(null); setFormError(null);
     try {
-      await fetch(`${BACKEND_URL}/api/vps`, {
+      const res  = await apiFetch(`/api/vps/test-connection`, {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ ...form, port: parseInt(form.port) || 22 }),
+        body:    JSON.stringify({
+          host: form.host,
+          port: parseInt(form.port) || 22,
+          username: form.username,
+          password: form.password,
+        }),
       });
-      const res  = await fetch(`${BACKEND_URL}/api/vps/${form.id}/test`, { method: 'POST' });
       const data = await res.json();
       setTestResult({ ok: data.ok, message: data.ok ? 'Connexion SSH réussie ✓' : data.error });
     } catch (err: any) {
@@ -529,12 +532,12 @@ export default function Servers() {
             <div className="srv-form-grid">
               <div>
                 <label className="srv-label">ENVIRONMENT ID</label>
-                <input className="srv-input" placeholder="staging" value={form.id}
+                <input className="srv-input" placeholder="my-vps" value={form.id}
                   onChange={e => setForm(f => ({ ...f, id: e.target.value }))} />
               </div>
               <div>
                 <label className="srv-label">SERVER NAME</label>
-                <input className="srv-input" placeholder="VPS Staging" value={form.name}
+                <input className="srv-input" placeholder="My VPS" value={form.name}
                   onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
               </div>
               <div className="srv-form-full">
@@ -553,10 +556,10 @@ export default function Servers() {
                   onChange={e => setForm(f => ({ ...f, port: e.target.value }))} />
               </div>
               <div className="srv-form-full">
-                <label className="srv-label">SSH PASSWORD</label>
+                <label className="srv-label">SSH PASSWORD (optional)</label>
                 <div className="srv-input-wrap">
                   <input className="srv-input" type={showPassword ? 'text' : 'password'}
-                    placeholder="••••••••••••" value={form.password}
+                    placeholder="Leave empty for later" value={form.password}
                     style={{ paddingRight: 40 }}
                     onChange={e => setForm(f => ({ ...f, password: e.target.value }))} />
                   <button className="srv-input-icon" onClick={() => setShowPassword(s => !s)}>
@@ -609,9 +612,9 @@ export default function Servers() {
             )}
 
             <div className="srv-modal-actions">
-              <button className="srv-btn-test" onClick={handleTest} disabled={testLoading}>
+              <button className="srv-btn-test" onClick={handleTest} disabled={testLoading || !form.password}>
                 {testLoading ? <Loader2 size={14} className="animate-spin" /> : null}
-                {testLoading ? 'Testing...' : 'Test SSH'}
+                {testLoading ? 'Testing...' : (form.password ? 'Test SSH' : 'SSH optional')}
               </button>
               <button className={`srv-btn-add${formSuccess ? ' success' : ''}`}
                 onClick={handleAddVps} disabled={formLoading || formSuccess}>

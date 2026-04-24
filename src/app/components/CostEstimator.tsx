@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { X, DollarSign, Cpu, HardDrive, Loader2, RefreshCw } from 'lucide-react';
-
-const BACKEND_URL = 'http://localhost:3001';
+import { apiFetch } from '../lib/api';
 
 interface CostEstimatorProps {
   onClose: () => void;
@@ -29,7 +28,7 @@ export default function CostEstimator({ onClose, vpsId }: CostEstimatorProps) {
 
   // ── Charger les VPS disponibles ────────────────────────────────────────────
   useEffect(() => {
-    fetch(`${BACKEND_URL}/api/vps`)
+    apiFetch(`/api/vps`)
       .then(r => r.json())
       .then(data => {
         const list = Array.isArray(data) ? data : Object.values(data);
@@ -44,7 +43,7 @@ export default function CostEstimator({ onClose, vpsId }: CostEstimatorProps) {
     if (!selectedVps) return;
     setLoading(true);
     try {
-      const res  = await fetch(`${BACKEND_URL}/api/metrics/${selectedVps}`);
+      const res  = await apiFetch(`/api/metrics/${selectedVps}`);
       if (!res.ok) throw new Error();
       const data = await res.json();
 

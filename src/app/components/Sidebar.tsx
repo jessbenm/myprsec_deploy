@@ -1,6 +1,8 @@
-import { Link, useLocation } from 'react-router';
-import { Home, GitBranch, BarChart3, History, Server, Settings, User, Moon, Sun, Bell } from 'lucide-react';
+import { useState } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router';
+import { Home, GitBranch, BarChart3, History, Server, Settings, User, Moon, Sun, Bell, LogOut } from 'lucide-react';
 import { useTheme } from '../theme-context';
+import { logoutUser } from '../auth-api';
 
 const navItems = [
   { icon: Home,      path: '/',           label: 'Dashboard'  },
@@ -13,12 +15,25 @@ const navItems = [
 
 export default function Sidebar() {
   const location = useLocation();
+  const navigate = useNavigate();
   const { theme, toggleTheme } = useTheme();
+  const [loggingOut, setLoggingOut] = useState(false);
   const isDark = theme === 'dark';
 
   const bg      = isDark ? 'bg-[#0a0d14] border-[#1a2035]' : 'bg-[#f8fafc] border-gray-200';
   const mutedTx = isDark ? 'text-[#64748b]' : 'text-gray-400';
   const hoverBg = isDark ? 'hover:bg-[#111827] hover:text-[#94a3b8]' : 'hover:bg-gray-100 hover:text-gray-700';
+
+  const handleLogout = async () => {
+    if (loggingOut) return;
+    setLoggingOut(true);
+    try {
+      await logoutUser();
+    } finally {
+      navigate('/login', { replace: true });
+      setLoggingOut(false);
+    }
+  };
 
   return (
     <div className={`group/sb fixed left-0 top-0 z-40 flex h-screen flex-col border-r overflow-hidden w-[60px] hover:w-[200px] transition-[width] duration-200 ease-in-out ${bg}`}>
@@ -118,10 +133,19 @@ export default function Sidebar() {
           <span className="opacity-0 group-hover/sb:opacity-100 transition-opacity duration-150">{isDark ? 'Light Mode' : 'Dark Mode'}</span>
         </button>
 
+        <button
+          onClick={handleLogout}
+          disabled={loggingOut}
+          className={`flex items-center gap-3 rounded-lg px-[10px] py-2.5 text-xs font-medium whitespace-nowrap transition-all duration-150 ${isDark ? 'text-[#64748b]' : 'text-gray-500'} ${hoverBg} disabled:opacity-60`}
+        >
+          <LogOut size={16} strokeWidth={1.8} className="flex-shrink-0" />
+          <span className="opacity-0 group-hover/sb:opacity-100 transition-opacity duration-150">{loggingOut ? 'Signing out...' : 'Logout'}</span>
+        </button>
+
         {/* Version badge */}
         <div className={`mt-2 mx-1 rounded-lg px-3 py-2 opacity-0 group-hover/sb:opacity-100 transition-opacity duration-200 ${isDark ? 'bg-[#111827]' : 'bg-gray-100'}`}>
           <div className={`text-[9px] font-medium ${mutedTx}`}>Version</div>
-          <div className={`text-[10px] font-semibold ${isDark ? 'text-[#475569]' : 'text-gray-500'}`}>v1.2.4 · Staging</div>
+          <div className={`text-[10px] font-semibold ${isDark ? 'text-[#475569]' : 'text-gray-500'}`}>v1.2.4</div>
         </div>
       </div>
     </div>

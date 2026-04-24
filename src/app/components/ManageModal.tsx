@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { X, Server, Trash2, RefreshCw, Terminal, Activity, AlertTriangle, CheckCircle, Loader2 } from 'lucide-react';
-
-const BACKEND_URL = 'http://localhost:3001';
+import { apiFetch } from '../lib/api';
 
 interface ManageModalProps {
   server: {
@@ -12,6 +11,7 @@ interface ManageModalProps {
     ram?: { used: number; total: number };
     containers?: { running: number; total: number };
     status?: string;
+    sshConfigured?: boolean;
   };
   onClose: () => void;
   onDisconnect: (id: string) => void;
@@ -27,7 +27,7 @@ export default function ManageModal({ server, onClose, onDisconnect, onOpenTermi
   const handleDisconnect = async () => {
     setDisconnecting(true);
     try {
-      await fetch(`${BACKEND_URL}/api/vps/${server.id}`, { method: 'DELETE' });
+      await apiFetch(`/api/vps/${server.id}`, { method: 'DELETE' });
       onDisconnect(server.id);
       onClose();
     } catch {
@@ -36,9 +36,13 @@ export default function ManageModal({ server, onClose, onDisconnect, onOpenTermi
   };
 
   const handleTest = async () => {
+    if (!server.sshConfigured) {
+      setTestResult({ ok: false, message: 'SSH is not configured for this VPS yet' });
+      return;
+    }
     setTesting(true); setTestResult(null);
     try {
-      const res  = await fetch(`${BACKEND_URL}/api/vps/${server.id}/test`, { method: 'POST' });
+      const res  = await apiFetch(`/api/vps/${server.id}/test`, { method: 'POST' });
       const data = await res.json();
       setTestResult({ ok: data.ok, message: data.ok ? `Connected ✓ — ${data.output?.split('\n')[0] || ''}` : data.error });
     } catch (err: any) {
@@ -114,17 +118,18 @@ export default function ManageModal({ server, onClose, onDisconnect, onOpenTermi
         {/* Actions */}
         <div className="px-5 pb-4 flex flex-col gap-2">
           <div className="grid grid-cols-2 gap-2">
-            <button onClick={handleTest} disabled={testing}
+            <button onClick={handleTest} disabled={testing || !server.sshConfigured}
               className="flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-semibold transition-all"
               style={{ background: '#1e293b', border: '1px solid #334155', color: '#94a3b8' }}>
               {testing ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
-              {testing ? 'Testing...' : 'Test Connection'}
+              {testing ? 'Testing...' : (server.sshConfigured ? 'Test Connection' : 'SSH not configured')}
             </button>
-            <button onClick={() => { onClose(); onOpenTerminal(); }}
+            <button onClick={() => { if (!server.sshConfigured) return; onClose(); onOpenTerminal(); }}
+              disabled={!server.sshConfigured}
               className="flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-semibold transition-all"
               style={{ background: 'linear-gradient(135deg, #06b6d4, #2563eb)', color: '#fff', boxShadow: '0 4px 14px rgba(6,182,212,0.3)' }}>
               <Terminal size={13} />
-              Open SSH
+              {server.sshConfigured ? 'Open SSH' : 'SSH not configured'}
             </button>
           </div>
 

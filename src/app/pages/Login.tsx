@@ -12,6 +12,7 @@ export default function Login() {
   const [error, setError]       = useState('');
   const [checking, setChecking] = useState(true);
   const navigate = useNavigate();
+  const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
   useEffect(() => {
     let active = true;
@@ -30,6 +31,7 @@ export default function Login() {
     e.preventDefault();
     setError('');
     if (!email || !password) { setError('Please fill in all fields.'); return; }
+    if (!emailPattern.test(email.trim())) { setError('Please enter a valid email address like name@example.com.'); return; }
     setLoading(true);
     try {
       await loginUser({ email, password });
@@ -121,6 +123,8 @@ export default function Login() {
               <label className="mb-1.5 block text-xs font-medium text-[#94a3b8]">Email</label>
               <input
                 type="email"
+                inputMode="email"
+                autoComplete="email"
                 placeholder="you@mypresc.dev"
                 value={email}
                 onChange={e => setEmail(e.target.value)}
@@ -198,7 +202,7 @@ export default function Login() {
         </p>
 
         <p className="mt-3 text-center text-[10px] text-[#1e293b]">
-          MyPresc Deploy v1.2.4 · Staging
+          MyPresc Deploy v1.2.4
         </p>
       </motion.div>
     </div>

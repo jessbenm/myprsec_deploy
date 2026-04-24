@@ -14,6 +14,7 @@ export default function Signup() {
   const [error, setError] = useState('');
   const [checking, setChecking] = useState(true);
   const navigate = useNavigate();
+  const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
   useEffect(() => {
     let active = true;
@@ -34,6 +35,16 @@ export default function Signup() {
 
     if (!name || !email || !password || !confirmPassword) {
       setError('Please fill in all fields.');
+      return;
+    }
+
+    if (!emailPattern.test(email.trim())) {
+      setError('Please enter a valid email address like name@example.com.');
+      return;
+    }
+
+    if (password.length < 8) {
+      setError('Password must be at least 8 characters long.');
       return;
     }
 
@@ -98,19 +109,21 @@ export default function Signup() {
               <label className="mb-1.5 block text-xs font-medium text-[#94a3b8]">Email</label>
               <div className="relative">
                 <Mail size={16} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-[#64748b]" />
-                <input value={email} onChange={e => setEmail(e.target.value)} type="email" placeholder="you@example.com" className="w-full rounded-xl px-10 py-3 text-sm text-white placeholder-[#334155] outline-none transition-all focus:ring-2 focus:ring-[#3b82f6]/40" style={{ background: '#0a0f1e', border: '1px solid #1e293b' }} />
+                <input value={email} onChange={e => setEmail(e.target.value)} type="email" inputMode="email" autoComplete="email" placeholder="you@example.com" className="w-full rounded-xl px-10 py-3 text-sm text-white placeholder-[#334155] outline-none transition-all focus:ring-2 focus:ring-[#3b82f6]/40" style={{ background: '#0a0f1e', border: '1px solid #1e293b' }} />
               </div>
+              <p className="mt-1 text-[11px] text-[#64748b]">Use a valid email format like name@example.com</p>
             </div>
 
             <div>
               <label className="mb-1.5 block text-xs font-medium text-[#94a3b8]">Password</label>
               <div className="relative">
                 <Lock size={16} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-[#64748b]" />
-                <input value={password} onChange={e => setPassword(e.target.value)} type={showPass ? 'text' : 'password'} placeholder="Minimum 10 characters" className="w-full rounded-xl px-10 py-3 pr-10 text-sm text-white placeholder-[#334155] outline-none transition-all focus:ring-2 focus:ring-[#3b82f6]/40" style={{ background: '#0a0f1e', border: '1px solid #1e293b' }} />
+                <input value={password} onChange={e => setPassword(e.target.value)} type={showPass ? 'text' : 'password'} minLength={8} placeholder="Minimum 8 characters" className="w-full rounded-xl px-10 py-3 pr-10 text-sm text-white placeholder-[#334155] outline-none transition-all focus:ring-2 focus:ring-[#3b82f6]/40" style={{ background: '#0a0f1e', border: '1px solid #1e293b' }} />
                 <button type="button" onClick={() => setShowPass(!showPass)} className="absolute right-3 top-1/2 -translate-y-1/2 text-[#334155] hover:text-[#64748b] transition-colors">
                   {showPass ? <EyeOff size={15} /> : <Eye size={15} />}
                 </button>
               </div>
+              <p className="mt-1 text-[11px] text-[#64748b]">Minimum 8 characters.</p>
             </div>
 
             <div>

@@ -5,7 +5,7 @@ import DiffViewer from '../components/DiffViewer';
 import RollbackModal from '../components/RollbackModal';
 import { Loader2, RefreshCw, AlertCircle } from 'lucide-react';
 
-const BACKEND_URL = 'http://localhost:3001';
+import { apiFetch } from '../lib/api';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Deployment {
@@ -314,9 +314,16 @@ export default function History() {
 
   // ── Fetch depuis GitHub Actions ───────────────────────────────────────────
   const fetchHistory = async () => {
+    if (!environment) {
+      setDeployments([]);
+      setStats(null);
+      setError('No VPS configured for this account yet');
+      setLoading(false);
+      return;
+    }
     setLoading(true); setError(null);
     try {
-      const res = await fetch(`${BACKEND_URL}/api/pipeline/${environment}`);
+      const res = await apiFetch(`/api/pipeline/${environment}`);
       if (!res.ok) {
         const d = await res.json();
         throw new Error(d.error);

@@ -13,7 +13,7 @@ import {
   Cpu, MemoryStick, Radio, Timer,
 } from 'lucide-react';
 
-const BACKEND_URL = 'http://localhost:3001';
+import { apiFetch } from '../lib/api';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Container {
@@ -251,13 +251,23 @@ export default function Dashboard() {
   const [lastUpdated,  setLastUpdated]  = useState(0);
 
   const fetchAll = async () => {
+    if (!environment) {
+      setContainers([]);
+      setLogs([]);
+      setAlerts([]);
+      setLatency({ avg: 0, p95: 0, uptime: 100 });
+      setCpuHistory({});
+      setLoading(false);
+      setLastUpdated(0);
+      return;
+    }
     try {
       const [metricsRes, logsRes, alertsRes, latencyRes, cpuHistoryRes] = await Promise.allSettled([
-        fetch(`${BACKEND_URL}/api/metrics/${environment}`),
-        fetch(`${BACKEND_URL}/api/logs/${environment}?lines=30`),
-        fetch(`${BACKEND_URL}/api/alerts/${environment}`),
-        fetch(`${BACKEND_URL}/api/history/${environment}/latency?range=1h`),
-        fetch(`${BACKEND_URL}/api/history/${environment}/cpu?range=24h`),
+        apiFetch(`/api/metrics/${environment}`),
+        apiFetch(`/api/logs/${environment}?lines=30`),
+        apiFetch(`/api/alerts/${environment}`),
+        apiFetch(`/api/history/${environment}/latency?range=1h`),
+        apiFetch(`/api/history/${environment}/cpu?range=24h`),
       ]);
 
       if (metricsRes.status === 'fulfilled' && metricsRes.value.ok) {
@@ -360,7 +370,7 @@ export default function Dashboard() {
           )}
         </div>
         <div className="flex items-center gap-3 text-[11px] text-gray-400">
-          <span className="capitalize font-medium text-[#3b82f6]">{environment}</span>
+          <span className="capitalize font-medium text-[#3b82f6]">{environment || 'No VPS'}</span>
           <span>·</span>
           <span>{containers.length} containers</span>
           <span>·</span>

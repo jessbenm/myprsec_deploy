@@ -8,7 +8,7 @@ import {
   Cpu, MemoryStick, WifiOff,
 } from 'lucide-react';
 
-const BACKEND_URL = 'http://localhost:3001';
+import { apiFetch } from '../lib/api';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface RawAlert {
@@ -362,9 +362,16 @@ export default function Alerts() {
 
   // ── Fetch alerts ─────────────────────────────────────────────────────────
   const fetchAlerts = useCallback(async (silent = false) => {
+    if (!environment) {
+      setAlerts([]);
+      setStats(null);
+      setError('No VPS configured for this account yet');
+      setLoading(false);
+      return;
+    }
     if (!silent) setLoading(true);
     try {
-      const res  = await fetch(`${BACKEND_URL}/api/alerts/${environment}`);
+      const res  = await apiFetch(`/api/alerts/${environment}`);
       if (!res.ok) { const d = await res.json(); throw new Error(d.error); }
       const data = await res.json();
 
@@ -453,8 +460,8 @@ export default function Alerts() {
                   : error
                   ? 'Connection error'
                   : unread > 0
-                  ? `${unread} unread • ${environment}`
-                  : `All clear • ${environment}`
+                  ? `${unread} unread • ${environment || 'No VPS'}`
+                  : `All clear • ${environment || 'No VPS'}`
                 }
               </div>
             </div>

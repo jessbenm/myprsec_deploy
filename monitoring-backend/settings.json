@@ -1,9 +1,0 @@
-{
-  "discordWebhook": "https://discord.com/api/webhooks/1487677811895439523/cs9XEH2ltlfYDnHVqodpByYY0_HrNwVFHMpdD5fpGzY9cThDcfkVV2o8-XX3N5o_IJKc",
-  "slackWebhook": "",
-  "notifyDeploy": false,
-  "notifyFailure": true,
-  "notifyRollback": true,
-  "apiToken": "d60bc701fce0c4598db4a0e8aa1769a87fb40f19f27e6889784421b90a23416e",
-  "sshAccess": true
-}
