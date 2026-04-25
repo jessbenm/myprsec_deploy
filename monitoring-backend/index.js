@@ -56,6 +56,10 @@ app.use(cors({
 }));
 app.use(express.json());
 
+app.get('/', (_req, res) => {
+  res.status(200).send('MyPresc Deploy backend is running. Use /api/health for health checks.');
+});
+
 // ══════════════════════════════════════════════════════════════════════════════
 // PHASE 1 — AES-256-GCM ENCRYPTION
 // Used for: ssh_password, github_token, api_token stored in DB.
