@@ -90,10 +90,14 @@ function decrypt(stored) {
 // ══════════════════════════════════════════════════════════════════════════════
 // PHASE 3 — DATABASE SETUP
 // ══════════════════════════════════════════════════════════════════════════════
-const databasePath = process.env.DATABASE_PATH || (process.env.RENDER ? '/data/metrics-history.db' : './metrics-history.db');
-const databaseDir = path.dirname(databasePath);
-if (databaseDir && databaseDir !== '.' && !fs.existsSync(databaseDir)) {
-  fs.mkdirSync(databaseDir, { recursive: true });
+const preferredDatabasePath = process.env.DATABASE_PATH || (process.env.RENDER ? '/data/metrics-history.db' : './metrics-history.db');
+const preferredDatabaseDir = path.dirname(preferredDatabasePath);
+const databasePath = (preferredDatabaseDir && preferredDatabaseDir !== '.' && fs.existsSync(preferredDatabaseDir))
+  ? preferredDatabasePath
+  : path.resolve(process.env.RENDER ? '/tmp/metrics-history.db' : './metrics-history.db');
+
+if (process.env.RENDER && databasePath !== preferredDatabasePath) {
+  console.warn(`[db] ${preferredDatabasePath} is unavailable, falling back to ${databasePath}`);
 }
 
 const db = new Database(databasePath);
