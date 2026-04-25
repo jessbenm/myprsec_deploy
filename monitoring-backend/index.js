@@ -296,7 +296,24 @@ db.exec(`
     FOREIGN KEY (user_id) REFERENCES users(id)         ON DELETE CASCADE
   );
   CREATE INDEX IF NOT EXISTS idx_pipeline_jobs_run_id ON pipeline_jobs(run_id);
+
+  -- ── oauth_accounts ──────────────────────────────────────────────────��──────
+  CREATE TABLE IF NOT EXISTS oauth_accounts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL,
+    provider    TEXT    NOT NULL,
+    provider_id TEXT    NOT NULL,
+    created_at  INTEGER NOT NULL,
+    UNIQUE (provider, provider_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_oauth_provider ON oauth_accounts(provider, provider_id);
 `);
+
+// ── Add profile columns to users if they don't exist (migration) ─────────────
+if (!hasColumn('users', 'phone'))    db.exec('ALTER TABLE users ADD COLUMN phone TEXT NOT NULL DEFAULT ""');
+if (!hasColumn('users', 'location')) db.exec('ALTER TABLE users ADD COLUMN location TEXT NOT NULL DEFAULT ""');
+if (!hasColumn('users', 'timezone')) db.exec('ALTER TABLE users ADD COLUMN timezone TEXT NOT NULL DEFAULT ""');
 
 // ── Migrate auth_users → users (one-time, non-destructive) ────────────────────
 if (tableExists('auth_users')) {
@@ -444,10 +461,13 @@ const stmtSelectUserByEmail = db.prepare(`
   FROM users WHERE email = ? AND deleted_at IS NULL
 `);
 const stmtSelectUserById = db.prepare(`
-  SELECT id, name, email, created_at, updated_at FROM users WHERE id = ?
+  SELECT id, name, email, phone, location, timezone, created_at, updated_at FROM users WHERE id = ?
 `);
 const stmtUpdateUserPassword = db.prepare(`
   UPDATE users SET password_hash = ?, password_salt = ?, updated_at = ? WHERE id = ?
+`);
+const stmtUpdateUserProfile = db.prepare(`
+  UPDATE users SET name=?, phone=?, location=?, timezone=?, updated_at=? WHERE id=?
 `);
 const stmtInsertSession = db.prepare(`
   INSERT INTO user_sessions (user_id, token, expires_at, ip_address, created_at)
@@ -559,8 +579,34 @@ function cleanGithubRepo(repo) {
   return m ? m[1] : repo.trim();
 }
 
+const DISPOSABLE_DOMAINS = new Set([
+  'mailinator.com','tempmail.com','guerrillamail.com','throwaway.email','sharklasers.com',
+  'guerrillamail.info','grr.la','guerrillamail.biz','guerrillamail.de','guerrillamail.net',
+  'guerrillamail.org','spam4.me','yopmail.com','yopmail.fr','cool.fr.nf','jetable.fr.nf',
+  'nospam.ze.tc','nomail.xl.cx','mega.zik.dj','speed.1s.fr','courriel.fr.nf','moncourrier.fr.nf',
+  'monemail.fr.nf','monmail.fr.nf','trashmail.com','trashmail.at','trashmail.io','trashmail.me',
+  'trashmail.net','trashmail.org','dispostable.com','mailnull.com','spamgourmet.com',
+  'maildrop.cc','getairmail.com','filzmail.com','throwam.com','tempr.email','discard.email',
+  'spamhereplease.com','fakeinbox.com','mailnesia.com','mailnull.com','spamfree24.org',
+  'mailexpire.com','tempinbox.com','tempomail.fr','throwam.com','ymail.com',
+]);
+
 function isValidEmail(email) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || '').trim());
+  const e = String(email || '').trim().toLowerCase();
+  if (!/^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$/.test(e)) return false;
+  const domain = e.split('@')[1];
+  if (!domain || domain.split('.').pop().length < 2) return false;
+  if (DISPOSABLE_DOMAINS.has(domain)) return false;
+  return true;
+}
+
+function getEmailError(email) {
+  const e = String(email || '').trim().toLowerCase();
+  if (!/^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$/.test(e)) return 'Email address is invalid. Use a valid format like name@example.com';
+  const domain = e.split('@')[1];
+  if (!domain || domain.split('.').pop().length < 2) return 'Email domain is invalid.';
+  if (DISPOSABLE_DOMAINS.has(domain)) return 'Temporary/disposable email addresses are not allowed.';
+  return null;
 }
 
 function parseCpu(s) { return parseFloat(s) || 0; }
@@ -758,8 +804,8 @@ app.post('/api/auth/signup', (req, res) => {
     const trimmedName     = String(name).trim();
     const pw              = String(password);
 
-    if (!isValidEmail(normalizedEmail))
-      return res.status(400).json({ success: false, error: 'Email must be in a valid format like name@example.com' });
+    const emailErr = getEmailError(normalizedEmail);
+    if (emailErr) return res.status(400).json({ success: false, error: emailErr });
     if (pw.length < 8)
       return res.status(400).json({ success: false, error: 'Password must be at least 8 characters long' });
     if (pw !== String(confirmPassword))
@@ -797,7 +843,7 @@ app.post('/api/auth/login', (req, res) => {
 
     const normalizedEmail = String(email).trim().toLowerCase();
     if (!isValidEmail(normalizedEmail)) {
-      return res.status(400).json({ success: false, error: 'Email must be in a valid format like name@example.com' });
+      return res.status(400).json({ success: false, error: 'Email address is invalid. Use a valid format like name@example.com' });
     }
     const user = stmtSelectUserByEmail.get(normalizedEmail);
     if (!user || !verifyPassword(String(password), user.password_salt, user.password_hash)) {
@@ -831,6 +877,101 @@ app.post('/api/auth/logout', (req, res) => {
   }
 });
 
+// ── GET /api/auth/github — redirect to GitHub OAuth ──────────────────────────
+app.get('/api/auth/github', (req, res) => {
+  const clientId   = process.env.GITHUB_CLIENT_ID;
+  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+  if (!clientId) {
+    return res.redirect(`${frontendUrl}/login?error=github_not_configured`);
+  }
+  const callbackUrl = `${frontendUrl}/api/auth/github/callback`;
+  const state = crypto.randomBytes(16).toString('hex');
+  const params = new URLSearchParams({ client_id: clientId, redirect_uri: callbackUrl, scope: 'user:email', state });
+  res.redirect(`https://github.com/login/oauth/authorize?${params}`);
+});
+
+// ── GET /api/auth/github/callback — handle GitHub OAuth callback ──────────────
+app.get('/api/auth/github/callback', async (req, res) => {
+  const { code } = req.query;
+  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+  const clientId     = process.env.GITHUB_CLIENT_ID;
+  const clientSecret = process.env.GITHUB_CLIENT_SECRET;
+
+  if (!code || !clientId || !clientSecret) {
+    return res.redirect(`${frontendUrl}/login?error=github_oauth_failed`);
+  }
+
+  try {
+    const { default: fetch } = await import('node-fetch');
+
+    // Exchange code for access token
+    const tokenRes  = await fetch('https://github.com/login/oauth/access_token', {
+      method:  'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ client_id: clientId, client_secret: clientSecret, code }),
+    });
+    const tokenData = await tokenRes.json();
+    if (!tokenData.access_token) throw new Error('GitHub token exchange failed');
+
+    const ghHeaders = {
+      Authorization: `Bearer ${tokenData.access_token}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    };
+
+    // Get GitHub user profile
+    const [userRes, emailsRes] = await Promise.all([
+      fetch('https://api.github.com/user',        { headers: ghHeaders }),
+      fetch('https://api.github.com/user/emails', { headers: ghHeaders }),
+    ]);
+    const githubUser = await userRes.json();
+    const emailList  = await emailsRes.json();
+
+    // Pick primary verified email, fallback to any
+    let email = githubUser.email;
+    if (!email && Array.isArray(emailList)) {
+      const primary = emailList.find(e => e.primary && e.verified) || emailList[0];
+      email = primary?.email || null;
+    }
+    if (!email) throw new Error('No email returned from GitHub');
+
+    const normalizedEmail = email.trim().toLowerCase();
+    const now = Date.now();
+
+    // Check existing OAuth link
+    let user = null;
+    const oauthRow = db.prepare('SELECT * FROM oauth_accounts WHERE provider = ? AND provider_id = ?').get('github', String(githubUser.id));
+
+    if (oauthRow) {
+      user = stmtSelectUserById.get(oauthRow.user_id);
+    } else {
+      user = stmtSelectUserByEmail.get(normalizedEmail);
+      if (!user) {
+        // Create new account
+        const displayName = (githubUser.name || githubUser.login || 'GitHub User').trim();
+        const result  = stmtInsertUser.run(displayName, normalizedEmail, '', '', now, now);
+        const newId   = result.lastInsertRowid;
+        stmtInsertUserSettings.run(newId, crypto.randomBytes(32).toString('hex'), now, now);
+        user = stmtSelectUserById.get(newId);
+        auditLog({ userId: newId, action: 'User signup via GitHub', category: 'security', ip: getClientIp(req) });
+      }
+      // Link OAuth account
+      db.prepare('INSERT OR IGNORE INTO oauth_accounts (user_id, provider, provider_id, created_at) VALUES (?, ?, ?, ?)').run(user.id, 'github', String(githubUser.id), now);
+    }
+
+    // Create session & set cookie
+    const token = createAuthToken();
+    stmtInsertSession.run(user.id, token, now + 24 * 60 * 60 * 1000, getClientIp(req), now);
+    setAuthCookie(res, token);
+    auditLog({ userId: user.id, action: 'User login via GitHub', category: 'security', ip: getClientIp(req) });
+
+    return res.redirect(`${frontendUrl}/`);
+  } catch (err) {
+    console.error('[github/callback]', err.message);
+    return res.redirect(`${frontendUrl}/login?error=github_oauth_failed`);
+  }
+});
+
 // ══════════════════════════════════════════════════════════════════════════════
 // PHASE 2 — GLOBAL AUTH MIDDLEWARE
 // Every /api/* route registered after this point requires a valid session.
@@ -845,7 +986,65 @@ app.use('/api', requireAuth);
 
 // ── GET /api/auth/me ──────────────────────────────────────────────────────────
 app.get('/api/auth/me', (req, res) => {
-  return res.json({ success: true, data: { user: req.authSession.user } });
+  const user = stmtSelectUserById.get(req.authSession.user.id);
+  if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+  return res.json({ success: true, data: { user } });
+});
+
+// ── PUT /api/auth/me — update profile ─────────────────────────────────────────
+app.put('/api/auth/me', (req, res) => {
+  const userId = req.authSession.user.id;
+  const { name, phone, location, timezone } = req.body || {};
+  if (!name?.trim()) return res.status(400).json({ success: false, error: 'Name is required' });
+  stmtUpdateUserProfile.run(name.trim(), (phone || '').trim(), (location || '').trim(), (timezone || '').trim(), Date.now(), userId);
+  auditLog({ userId, action: 'Profile updated', category: 'settings', ip: getClientIp(req) });
+  const updated = stmtSelectUserById.get(userId);
+  return res.json({ success: true, data: { user: updated } });
+});
+
+// ── POST /api/auth/change-password ────────────────────────────────────────────
+app.post('/api/auth/change-password', (req, res) => {
+  const userId = req.authSession.user.id;
+  const { currentPassword, newPassword } = req.body || {};
+  if (!currentPassword || !newPassword)
+    return res.status(400).json({ success: false, error: 'currentPassword and newPassword are required' });
+  if (String(newPassword).length < 8)
+    return res.status(400).json({ success: false, error: 'New password must be at least 8 characters' });
+
+  const user = db.prepare('SELECT password_hash, password_salt FROM users WHERE id = ?').get(userId);
+  if (!user || !verifyPassword(String(currentPassword), user.password_salt, user.password_hash))
+    return res.status(401).json({ success: false, error: 'Current password is incorrect' });
+
+  const { salt, hash } = hashPassword(String(newPassword));
+  stmtUpdateUserPassword.run(hash, salt, Date.now(), userId);
+  auditLog({ userId, action: 'Password changed', category: 'security', ip: getClientIp(req) });
+  return res.json({ success: true, message: 'Password changed successfully' });
+});
+
+// ── GET /api/profile/stats ────────────────────────────────────────────────────
+app.get('/api/profile/stats', (req, res) => {
+  const userId = req.authSession.user.id;
+  const deployments = db.prepare(`SELECT COUNT(*) as count FROM pipeline_runs WHERE user_id = ? AND conclusion = 'success'`).get(userId)?.count || 0;
+  const rollbacks   = db.prepare(`SELECT COUNT(*) as count FROM audit_log WHERE user_id = ? AND action LIKE 'Rollback%'`).get(userId)?.count || 0;
+  const latencyRows = db.prepare('SELECT ok FROM latency_history WHERE user_id = ? AND timestamp > ?').all(userId, Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const uptime      = latencyRows.length ? Math.round(latencyRows.filter(r => r.ok).length / latencyRows.length * 1000) / 10 : 100;
+  return res.json({ deployments, rollbacks, uptime });
+});
+
+// ── GET /api/profile/activity ─────────────────────────────────────────────────
+app.get('/api/profile/activity', (req, res) => {
+  const userId = req.authSession.user.id;
+  const rows   = db.prepare('SELECT timestamp, action, category, details FROM audit_log WHERE user_id = ? ORDER BY timestamp DESC LIMIT 10').all(userId);
+  const now    = Date.now();
+  const entries = rows.map(r => {
+    const label = r.details ? `${r.action} — ${r.details}` : r.action;
+    const diff  = now - r.timestamp;
+    const m     = Math.floor(diff / 60000);
+    const timeAgo = m < 1 ? 'just now' : m < 60 ? `${m}m ago` : m < 1440 ? `${Math.floor(m / 60)}h ago` : `${Math.floor(m / 1440)}d ago`;
+    const color = r.category === 'security' ? '#ef4444' : r.category === 'pipeline' ? '#10b981' : r.category === 'vps' ? '#3b82f6' : '#8b5cf6';
+    return { action: label, category: r.category, time: timeAgo, color };
+  });
+  return res.json({ entries });
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -870,26 +1069,45 @@ app.post('/api/vps', (req, res) => {
 
   const result = db.prepare(`
     INSERT INTO vps (user_id, slug, name, host, port, username, ssh_password, status, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 'unknown', ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'healthy', ?, ?)
   `).run(userId, slug, name || slug, host, port || 22, username, encPassword, now, now);
 
   const vpsId = result.lastInsertRowid;
+  console.log(`✅ VPS created: id=${vpsId}, slug=${slug}, user=${userId}`);
 
   if (cleanRepo && githubToken) {
-    db.prepare(`
-      INSERT INTO vps_github_integrations (vps_id, user_id, github_repo, github_token, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(vpsId, userId, cleanRepo, encrypt(githubToken), now, now);
+    try {
+      db.prepare(`
+        INSERT INTO vps_github_integrations (vps_id, user_id, github_repo, github_token, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(vpsId, userId, cleanRepo, encrypt(githubToken), now, now);
+      console.log(`✅ GitHub integration added for VPS ${vpsId}: ${cleanRepo}`);
+    } catch (e) {
+      console.error(`⚠️  Failed to add GitHub integration for ${vpsId}:`, e.message);
+    }
   }
 
   seedDefaultAlertRules(vpsId, userId);
+  console.log(`✅ Default alert rules seeded for VPS ${vpsId}`);
+
   if (encPassword) {
     collectMetrics({ id: vpsId, user_id: userId, host, port: port || 22, username, ssh_password: encPassword, slug });
     collectLatency({ id: vpsId, user_id: userId, host, slug });
   }
 
   auditLog({ userId, action: 'VPS added', category: 'vps', details: `${slug} (${username}@${host})${cleanRepo ? ' | GitHub: ' + cleanRepo : ''}`, ip: getClientIp(req) });
-  res.json({ message: 'VPS added', vps: { id: slug, name: name || slug, host } });
+  // Return properly formatted response matching frontend expectations
+  res.status(201).json({ 
+    success: true,
+    message: 'VPS added successfully', 
+    vps: { 
+      id: slug, 
+      name: name || slug, 
+      host,
+      status: 'healthy',
+      sshConfigured: !!encPassword
+    } 
+  });
 });
 
 // ── POST /api/vps/test-connection — test SSH without creating a VPS ──────────
@@ -909,19 +1127,37 @@ app.post('/api/vps/test-connection', async (req, res) => {
 
 // ── GET /api/vps — list user's servers ───────────────────────────────────────
 app.get('/api/vps', (req, res) => {
-  const list = db.prepare('SELECT slug AS id, name, host, status, CASE WHEN ssh_password IS NOT NULL AND ssh_password != "" THEN 1 ELSE 0 END AS sshConfigured FROM vps WHERE user_id = ? AND deleted_at IS NULL').all(req.authSession.user.id);
-  res.json(list);
+  try {
+    const userId = req.authSession.user.id;
+    const list = db.prepare("SELECT slug AS id, name, host, status, CASE WHEN ssh_password IS NOT NULL AND ssh_password != '' THEN 1 ELSE 0 END AS sshConfigured FROM vps WHERE user_id = ? AND deleted_at IS NULL ORDER BY created_at DESC").all(userId);
+    console.log(`📋 GET /api/vps: found ${list.length} VPS for user ${userId}`);
+    res.json(list);
+  } catch (err) {
+    console.error('[GET /api/vps] Error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch VPS list' });
+  }
 });
 
 // ── DELETE /api/vps/:id — hard delete (cascades to metrics, snapshots, etc.) ─
 app.delete('/api/vps/:id', (req, res) => {
-  const userId = req.authSession.user.id;
-  const row    = db.prepare('SELECT id FROM vps WHERE user_id = ? AND slug = ? AND deleted_at IS NULL').get(userId, req.params.id);
-  if (!row) return res.status(404).json({ error: 'VPS not found' });
+  try {
+    const userId = req.authSession.user.id;
+    const row    = db.prepare('SELECT id, slug FROM vps WHERE user_id = ? AND slug = ? AND deleted_at IS NULL').get(userId, req.params.id);
+    if (!row) {
+      console.warn(`❌ DELETE /api/vps: VPS "${req.params.id}" not found for user ${userId}`);
+      return res.status(404).json({ error: 'VPS not found' });
+    }
 
-  db.prepare('DELETE FROM vps WHERE id = ?').run(row.id);
-  auditLog({ userId, action: 'VPS removed', category: 'vps', details: req.params.id, ip: getClientIp(req) });
-  res.json({ ok: true });
+    // Soft delete instead of hard delete to preserve audit trail
+    db.prepare('UPDATE vps SET deleted_at = ? WHERE id = ?').run(Date.now(), row.id);
+    console.log(`✅ VPS deleted (soft): id=${row.id}, slug=${row.slug}, user=${userId}`);
+    
+    auditLog({ userId, action: 'VPS removed', category: 'vps', details: req.params.id, ip: getClientIp(req) });
+    res.json({ success: true, message: 'VPS removed', id: req.params.id });
+  } catch (err) {
+    console.error('[DELETE /api/vps] Error:', err.message);
+    res.status(500).json({ error: 'Failed to delete VPS' });
+  }
 });
 
 // ── POST /api/vps/:id/test ────────────────────────────────────────────────────
@@ -1517,3 +1753,5 @@ server.listen(PORT, () => {
   console.log(`🔒 Auth required on all /api/* routes (except /signup, /login, /logout, /health)`);
   console.log(`🔐 Encryption: AES-256-GCM active for SSH passwords and tokens\n`);
 });
+
+

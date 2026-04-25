@@ -5,7 +5,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 
-const WS_URL = 'ws://localhost:3001';
+const WS_URL = window.location.protocol.replace('http', 'ws') + '//' + window.location.host;
 
 interface TerminalProps {
   server: {

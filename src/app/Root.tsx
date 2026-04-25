@@ -4,16 +4,21 @@ import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import { useTheme } from './theme-context';
 import { getCurrentUser } from './auth-api';
+import { useUser } from '../user-context';
 
 export default function Root() {
   const { theme } = useTheme();
+  const { setUser } = useUser();
   const [isAuth, setIsAuth] = useState<boolean | null>(null);
 
   useEffect(() => {
     let active = true;
     getCurrentUser()
-      .then(() => {
-        if (active) setIsAuth(true);
+      .then(res => {
+        if (active) {
+          setIsAuth(true);
+          if (res.success && res.data?.user) setUser(res.data.user as any);
+        }
       })
       .catch(() => {
         if (active) setIsAuth(false);

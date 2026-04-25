@@ -1,0 +1,33 @@
+# ── Stage 1: Build native deps ─────────────────────────────────────────────
+FROM node:20-alpine AS deps
+
+# better-sqlite3 and ssh2 require native compilation
+RUN apk add --no-cache python3 make g++
+
+WORKDIR /app
+COPY monitoring-backend/package.json monitoring-backend/package-lock.json* ./
+RUN npm ci --only=production
+
+# ── Stage 2: Runtime ────────────────────────────────────────────────────────
+FROM node:20-alpine AS runner
+
+WORKDIR /app
+
+COPY --from=deps /app/node_modules ./node_modules
+COPY monitoring-backend/ .
+
+# /data is the volume mount point — SQLite uses CWD for relative paths
+RUN mkdir -p /data
+
+EXPOSE 3001
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+  CMD node -e "\
+    const port = process.env.PORT || 3001; \
+    require('http').get('http://localhost:' + port + '/api/auth/me', r => { \
+      process.exit(r.statusCode < 500 ? 0 : 1); \
+    }).on('error', () => process.exit(1));"
+
+# Run from /data so SQLite writes metrics-history.db to the named volume
+WORKDIR /data
+CMD ["node", "/app/index.js"]

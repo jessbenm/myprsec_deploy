@@ -40,3 +40,16 @@ yarn-error.log*
 # OS
 .DS_Store
 Thumbs.db
+
+# Docker
+infra/.env
+# (infra/.env.example is committed — it contains no secrets)
+
+# SSL / Let's Encrypt certificates (managed by certbot volume, not git)
+certbot/
+infra/certbot/
+
+# Backups
+backups/
+*.backup
+*.bak

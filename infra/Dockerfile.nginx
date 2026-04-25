@@ -1,0 +1,23 @@
+FROM nginx:alpine
+
+# Remove default config
+RUN rm -f /etc/nginx/conf.d/default.conf
+
+# Disable the built-in template processing (we handle it ourselves)
+ENV NGINX_ENVSUBST_TEMPLATE_DIR=/etc/nginx/templates-disabled
+
+# Main nginx config
+COPY nginx/nginx.conf /etc/nginx/nginx.conf
+
+# SPA config for frontend (used by Dockerfile.frontend too)
+# App configs — stored as templates, activated by select-config.sh
+COPY nginx/conf.d/ /etc/nginx/app-templates/
+
+# Startup script that selects ssl or nossl config and runs envsubst
+COPY scripts/select-config.sh /docker-entrypoint.d/40-select-config.sh
+RUN chmod +x /docker-entrypoint.d/40-select-config.sh
+
+EXPOSE 80 443
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+  CMD wget -qO- http://localhost/healthz || exit 1

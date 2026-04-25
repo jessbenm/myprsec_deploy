@@ -1,7 +1,5 @@
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001';
-
 export function apiFetch(path: string, options: RequestInit = {}) {
-  return fetch(`${BACKEND_URL}${path}`, {
+  return fetch(path, {
     ...options,
     credentials: 'include',
     headers: {
