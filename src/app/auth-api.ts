@@ -1,10 +1,12 @@
+import { resolveAuthUrl } from './lib/runtime';
+
 export const AUTH_API_URL = '/api/auth';
 
 type AuthPayload = Record<string, unknown>;
 
 async function request<T>(path: string, body?: AuthPayload, method?: string): Promise<T> {
   const resolvedMethod = method || (body !== undefined ? 'POST' : 'GET');
-  const response = await fetch(`${AUTH_API_URL}${path}`, {
+  const response = await fetch(resolveAuthUrl(`${AUTH_API_URL}${path}`), {
     method: resolvedMethod,
     credentials: 'include',
     headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,

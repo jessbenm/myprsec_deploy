@@ -3,6 +3,7 @@ import { motion } from 'motion/react';
 import { Eye, EyeOff, Loader2, UserRound, Mail, Lock, Github, Chrome } from 'lucide-react';
 import { useNavigate } from 'react-router';
 import { getCurrentUser, signupUser } from '../auth-api';
+import { resolveAuthUrl } from '../lib/runtime';
 
 // Same regex as backend
 const EMAIL_REGEX = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$/;
@@ -75,7 +76,7 @@ export default function Signup() {
   };
 
   const handleGithub = () => {
-    window.location.href = '/api/auth/github';
+    window.location.href = resolveAuthUrl('/api/auth/github');
   };
 
   if (checking) {

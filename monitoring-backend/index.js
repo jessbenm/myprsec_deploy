@@ -3,6 +3,7 @@ const express             = require('express');
 const cors                = require('cors');
 const { Client }          = require('ssh2');
 const fs                  = require('fs');
+const path                = require('path');
 const http                = require('http');
 const { WebSocketServer } = require('ws');
 const Database            = require('better-sqlite3');
@@ -29,7 +30,30 @@ const app    = express();
 const server = http.createServer(app);
 const PORT   = process.env.PORT || 3001;
 
-app.use(cors({ origin: true, credentials: true }));
+const defaultOrigins = [
+  process.env.FRONTEND_URL,
+  process.env.CORS_ORIGIN,
+  ...(process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',') : []),
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'http://localhost:4173',
+];
+const allowedOrigins = new Set(
+  defaultOrigins
+    .map(origin => origin && origin.trim())
+    .filter(Boolean)
+    .map(origin => origin.replace(/\/$/, ''))
+);
+
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin) return callback(null, true);
+    const normalizedOrigin = origin.replace(/\/$/, '');
+    if (allowedOrigins.has(normalizedOrigin)) return callback(null, true);
+    return callback(new Error(`Not allowed by CORS: ${origin}`), false);
+  },
+  credentials: true,
+}));
 app.use(express.json());
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -66,7 +90,13 @@ function decrypt(stored) {
 // ══════════════════════════════════════════════════════════════════════════════
 // PHASE 3 — DATABASE SETUP
 // ══════════════════════════════════════════════════════════════════════════════
-const db = new Database('./metrics-history.db');
+const databasePath = process.env.DATABASE_PATH || (process.env.RENDER ? '/data/metrics-history.db' : './metrics-history.db');
+const databaseDir = path.dirname(databasePath);
+if (databaseDir && databaseDir !== '.' && !fs.existsSync(databaseDir)) {
+  fs.mkdirSync(databaseDir, { recursive: true });
+}
+
+const db = new Database(databasePath);
 db.pragma('foreign_keys = ON');
 db.pragma('journal_mode = WAL');
 
@@ -512,15 +542,21 @@ function verifyPassword(password, salt, expectedHash) {
 
 function createAuthToken() { return crypto.randomBytes(32).toString('hex'); }
 
+function buildAuthCookie(token, maxAge) {
+  const sameSite = (process.env.COOKIE_SAMESITE || (process.env.NODE_ENV === 'production' ? 'None' : 'Lax')).trim();
+  const parts = [`mp_session=${token}`, 'HttpOnly', 'Path=/', `SameSite=${sameSite}`];
+  const shouldSecure = process.env.COOKIE_SECURE === 'true' || (sameSite.toLowerCase() === 'none' && process.env.NODE_ENV === 'production');
+  if (shouldSecure) parts.push('Secure');
+  if (typeof maxAge === 'number') parts.push(`Max-Age=${maxAge}`);
+  return parts.join('; ');
+}
+
 function setAuthCookie(res, token) {
-  const parts = [`mp_session=${token}`, 'HttpOnly', 'Path=/', 'SameSite=Lax'];
-  if (process.env.NODE_ENV === 'production') parts.push('Secure');
-  parts.push(`Max-Age=${60 * 60 * 24}`);
-  res.setHeader('Set-Cookie', parts.join('; '));
+  res.setHeader('Set-Cookie', buildAuthCookie(token, 60 * 60 * 24));
 }
 
 function clearAuthCookie(res) {
-  res.setHeader('Set-Cookie', 'mp_session=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0');
+  res.setHeader('Set-Cookie', buildAuthCookie('', 0));
 }
 
 function parseCookies(req) {
@@ -884,7 +920,9 @@ app.get('/api/auth/github', (req, res) => {
   if (!clientId) {
     return res.redirect(`${frontendUrl}/login?error=github_not_configured`);
   }
-  const callbackUrl = `${frontendUrl}/api/auth/github/callback`;
+  const requestProto = String(req.headers['x-forwarded-proto'] || req.protocol || 'http').split(',')[0].trim();
+  const requestHost = req.get('host');
+  const callbackUrl = `${requestProto}://${requestHost}/api/auth/github/callback`;
   const state = crypto.randomBytes(16).toString('hex');
   const params = new URLSearchParams({ client_id: clientId, redirect_uri: callbackUrl, scope: 'user:email', state });
   res.redirect(`https://github.com/login/oauth/authorize?${params}`);

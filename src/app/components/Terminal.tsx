@@ -4,8 +4,7 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
-
-const WS_URL = window.location.protocol.replace('http', 'ws') + '//' + window.location.host;
+import { resolveWsUrl } from '../lib/runtime';
 
 interface TerminalProps {
   server: {
@@ -78,7 +77,7 @@ export default function Terminal({ server, onClose }: TerminalProps) {
     // ── Connexion WebSocket ─────────────────────────────────────────────────
     xterm.writeln(`\x1b[36mConnecting to ${name} (${ip})...\x1b[0m`);
 
-    const ws = new WebSocket(`${WS_URL}/terminal/${id}`);
+    const ws = new WebSocket(resolveWsUrl(`/terminal/${id}`));
     wsRef.current = ws;
 
     ws.onopen = () => {

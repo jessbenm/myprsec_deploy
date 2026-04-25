@@ -3,6 +3,7 @@ import { motion } from 'motion/react';
 import { Eye, EyeOff, Github, Chrome, Loader2 } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router';
 import { getCurrentUser, loginUser } from '../auth-api';
+import { resolveAuthUrl } from '../lib/runtime';
 
 const EMAIL_REGEX = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$/;
 
@@ -59,7 +60,7 @@ export default function Login() {
   };
 
   const handleGithub = () => {
-    window.location.href = '/api/auth/github';
+    window.location.href = resolveAuthUrl('/api/auth/github');
   };
 
   if (checking) {

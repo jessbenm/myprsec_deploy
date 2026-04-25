@@ -221,7 +221,28 @@ Each CI deploy is tagged with the git SHA, so every deploy is independently roll
 
 ### Render
 1. **Web Service** (Node.js) + **Disk** at `/data` for backend
-2. **Static Site** — build: `npm run build`, publish: `dist/`
+2. **Static Site** — build: `npm install && npm run build`, publish: `dist/`
+
+Recommended environment variables on Render:
+
+Backend service:
+- `PORT=3001`
+- `NODE_ENV=production`
+- `ENCRYPTION_KEY=<64 hex chars>`
+- `DATABASE_PATH=/data/metrics-history.db`
+- `FRONTEND_URL=https://<your-frontend>.onrender.com`
+- `COOKIE_SAMESITE=None`
+- `COOKIE_SECURE=true`
+- GitHub OAuth callback is derived from the backend public URL and must be registered in GitHub as `https://<your-backend>.onrender.com/api/auth/github/callback`.
+
+Frontend static site:
+- `VITE_API_URL=https://<your-backend>.onrender.com`
+- `VITE_WS_URL=wss://<your-backend>.onrender.com`
+
+Important:
+- Attach a Render **Persistent Disk** to the backend and mount it at `/data`.
+- Keep the backend service deployed before opening the frontend.
+- GitHub OAuth redirect URLs must use the frontend Render domain, while the backend OAuth callback points back to `/api/auth/github/callback` on the frontend URL.
 
 ### Fly.io
 ```bash
