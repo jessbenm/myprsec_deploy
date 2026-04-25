@@ -44,12 +44,19 @@ const allowedOrigins = new Set(
     .filter(Boolean)
     .map(origin => origin.replace(/\/$/, ''))
 );
+const allowRenderSubdomains = process.env.ALLOW_RENDER_SUBDOMAINS !== 'false';
+
+function isOriginAllowed(origin) {
+  const normalizedOrigin = origin.replace(/\/$/, '');
+  if (allowedOrigins.has(normalizedOrigin)) return true;
+  if (allowRenderSubdomains && /\.onrender\.com$/i.test(new URL(normalizedOrigin).hostname)) return true;
+  return false;
+}
 
 app.use(cors({
   origin(origin, callback) {
     if (!origin) return callback(null, true);
-    const normalizedOrigin = origin.replace(/\/$/, '');
-    if (allowedOrigins.has(normalizedOrigin)) return callback(null, true);
+    if (isOriginAllowed(origin)) return callback(null, true);
     return callback(new Error(`Not allowed by CORS: ${origin}`), false);
   },
   credentials: true,
