@@ -197,10 +197,15 @@ export default function Pipeline() {
           style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)' }}>
           <AlertCircle size={16} className="text-[#ef4444] flex-shrink-0" />
           <div>
-            <div className="text-sm font-semibold text-[#ef4444]">Pipeline non configuré</div>
+            <div className="text-sm font-semibold text-[#ef4444]">
+              {error?.includes('401') || error?.includes('credentials') ? 'Token GitHub expiré' : 'Pipeline non configuré'}
+            </div>
             <div className="text-xs text-gray-400 mt-0.5">{error}</div>
             <div className="text-xs text-gray-500 mt-1">
-              Ajoutez GitHub repo et token dans le formulaire Add VPS pour activer le pipeline.
+              {error?.includes('401') || error?.includes('credentials')
+                ? 'Votre token GitHub est expiré ou révoqué. Allez sur github.com/settings/tokens, générez un nouveau token (scopes : repo + workflow), puis mettez-le à jour via le bouton Manage de votre VPS.'
+                : 'Ajoutez GitHub repo et token via le bouton Manage de votre VPS.'
+              }
             </div>
           </div>
         </div>

@@ -1221,6 +1221,41 @@ app.delete('/api/vps/:id', (req, res) => {
   }
 });
 
+// ── PATCH /api/vps/:id/github — update expired/revoked GitHub token ──────────
+app.patch('/api/vps/:id/github', (req, res) => {
+  try {
+    const userId = req.authSession.user.id;
+    const vpsRow = db.prepare('SELECT id FROM vps WHERE user_id = ? AND slug = ? AND deleted_at IS NULL').get(userId, req.params.id);
+    if (!vpsRow) return res.status(404).json({ error: 'VPS not found' });
+
+    const { token, repo } = req.body;
+    if (!token?.trim()) return res.status(400).json({ error: 'token is required' });
+
+    const encToken  = encrypt(token.trim());
+    const now       = Date.now();
+    const existing  = db.prepare('SELECT id FROM vps_github_integrations WHERE vps_id = ?').get(vpsRow.id);
+
+    if (existing) {
+      if (repo) {
+        const cleanRepo = cleanGithubRepo(repo);
+        db.prepare('UPDATE vps_github_integrations SET github_token = ?, github_repo = ?, updated_at = ? WHERE vps_id = ?').run(encToken, cleanRepo, now, vpsRow.id);
+      } else {
+        db.prepare('UPDATE vps_github_integrations SET github_token = ?, updated_at = ? WHERE vps_id = ?').run(encToken, now, vpsRow.id);
+      }
+    } else {
+      const cleanRepo = cleanGithubRepo(repo);
+      if (!cleanRepo) return res.status(400).json({ error: 'repo is required for first-time GitHub setup' });
+      db.prepare('INSERT INTO vps_github_integrations (vps_id, user_id, github_repo, github_token, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run(vpsRow.id, userId, cleanRepo, encToken, now, now);
+    }
+
+    auditLog({ userId, action: 'GitHub token updated', category: 'vps', details: req.params.id, ip: getClientIp(req) });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[PATCH /api/vps/github] Error:', err.message);
+    res.status(500).json({ error: 'Failed to update GitHub token' });
+  }
+});
+
 // ── POST /api/vps/:id/test ────────────────────────────────────────────────────
 app.post('/api/vps/:id/test', async (req, res) => {
   const vps = getVpsBySlug(req.authSession.user.id, req.params.id);

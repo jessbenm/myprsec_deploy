@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { X, Server, Trash2, RefreshCw, Terminal, Activity, AlertTriangle, CheckCircle, Loader2 } from 'lucide-react';
+import { X, Server, Trash2, RefreshCw, Terminal, AlertTriangle, CheckCircle, Loader2, KeyRound } from 'lucide-react';
 import { apiFetch } from '../lib/api';
 
 interface ManageModalProps {
@@ -23,6 +23,9 @@ export default function ManageModal({ server, onClose, onDisconnect, onOpenTermi
   const [showConfirm,   setShowConfirm]   = useState(false);
   const [testing,       setTesting]       = useState(false);
   const [testResult,    setTestResult]    = useState<{ ok: boolean; message: string } | null>(null);
+  const [ghToken,       setGhToken]       = useState('');
+  const [ghSaving,      setGhSaving]      = useState(false);
+  const [ghResult,      setGhResult]      = useState<{ ok: boolean; message: string } | null>(null);
 
   const handleDisconnect = async () => {
     setDisconnecting(true);
@@ -49,6 +52,22 @@ export default function ManageModal({ server, onClose, onDisconnect, onOpenTermi
       setTestResult({ ok: false, message: err.message });
     } finally {
       setTesting(false);
+    }
+  };
+
+  const handleUpdateGithubToken = async () => {
+    if (!ghToken.trim()) return;
+    setGhSaving(true); setGhResult(null);
+    try {
+      const res  = await apiFetch(`/api/vps/${server.id}/github`, { method: 'PATCH', body: JSON.stringify({ token: ghToken.trim() }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setGhResult({ ok: true, message: 'GitHub token updated ✓' });
+      setGhToken('');
+    } catch (err: any) {
+      setGhResult({ ok: false, message: err.message });
+    } finally {
+      setGhSaving(false);
     }
   };
 
@@ -97,6 +116,39 @@ export default function ManageModal({ server, onClose, onDisconnect, onOpenTermi
             <span className="h-2 w-2 rounded-full flex-shrink-0" style={{ background: statusColor, boxShadow: `0 0 6px ${statusColor}` }} />
             <span className="text-xs font-medium capitalize" style={{ color: statusColor }}>{server.status || 'unknown'}</span>
             <span className="text-[10px] text-[#475569] ml-auto font-mono">{server.host}</span>
+          </div>
+        </div>
+
+        {/* GitHub token update */}
+        <div className="px-5 pb-3">
+          <div className="rounded-xl p-3" style={{ background: '#1e293b', border: '1px solid #334155' }}>
+            <div className="flex items-center gap-1.5 mb-2 text-[10px] font-semibold uppercase tracking-widest" style={{ color: '#64748b' }}>
+              <KeyRound size={11} /> GitHub Token
+            </div>
+            <div className="flex gap-2">
+              <input
+                type="password"
+                placeholder="Nouveau token ghp_…"
+                value={ghToken}
+                onChange={e => setGhToken(e.target.value)}
+                className="flex-1 rounded-lg px-2.5 py-2 text-xs font-mono outline-none"
+                style={{ background: '#0f172a', border: '1px solid #334155', color: '#e2e8f0' }}
+              />
+              <button
+                onClick={handleUpdateGithubToken}
+                disabled={ghSaving || !ghToken.trim()}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold transition-all"
+                style={{ background: 'linear-gradient(135deg, #2563eb, #7c3aed)', color: '#fff', opacity: ghToken.trim() ? 1 : 0.5 }}>
+                {ghSaving ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle size={12} />}
+                {ghSaving ? '...' : 'Update'}
+              </button>
+            </div>
+            {ghResult && (
+              <p className="mt-1.5 text-[10px]" style={{ color: ghResult.ok ? '#22c55e' : '#ef4444' }}>
+                {ghResult.ok ? <CheckCircle size={10} className="inline mr-1" /> : <AlertTriangle size={10} className="inline mr-1" />}
+                {ghResult.message}
+              </p>
+            )}
           </div>
         </div>
 

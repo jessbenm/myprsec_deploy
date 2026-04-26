@@ -518,8 +518,16 @@ export default function History() {
         <div className="hist-error">
           <AlertCircle size={16} style={{ flexShrink: 0 }} />
           <div>
-            <div style={{ fontWeight: 700 }}>Pipeline non configuré</div>
+            <div style={{ fontWeight: 700 }}>
+              {error?.includes('401') || error?.includes('credentials') ? 'Token GitHub expiré' : 'Pipeline non configuré'}
+            </div>
             <div style={{ opacity: 0.8, marginTop: 2 }}>{error}</div>
+            <div style={{ opacity: 0.6, marginTop: 4, fontSize: 11 }}>
+              {error?.includes('401') || error?.includes('credentials')
+                ? 'Token expiré/révoqué — générez un nouveau token sur github.com/settings/tokens (scopes : repo + workflow) et mettez-le à jour via Manage VPS.'
+                : 'Configurez GitHub repo + token via le bouton Manage de votre VPS.'
+              }
+            </div>
           </div>
         </div>
       )}
