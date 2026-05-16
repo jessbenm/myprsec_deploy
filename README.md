@@ -61,6 +61,20 @@ Frontend → http://localhost:5173 · Backend → http://localhost:3001
 
 ## 3. VPS deployment with Docker
 
+Production uses a fully containerized stack:
+
+- `frontend` builds the Vite app inside Docker and serves it through Nginx.
+- `backend` runs Node/Express in Docker and stores sessions in Redis when `REDIS_URL` is set.
+- `redis` is the session store for auth tokens.
+- `nginx` handles reverse proxy and SSL termination.
+- `certbot` renews certificates automatically.
+
+For hot-reload development, use `docker-compose.dev.yml` explicitly:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+```
+
 ### 3.1 Server setup
 
 ```bash
@@ -88,6 +102,7 @@ Required values:
 | `CERTBOT_EMAIL` | your email |
 | `CERTBOT_DOMAIN` | same as DOMAIN |
 | `NGINX_CONFIG` | **set to `nossl` for first deploy** |
+| `REDIS_URL` | `redis://redis:6379` (Docker session store) |
 
 > DNS: point your domain A record to the VPS IP first. Verify: `dig +short yourdomain.com`
 

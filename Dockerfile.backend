@@ -5,8 +5,8 @@ FROM node:20-alpine AS deps
 RUN apk add --no-cache python3 make g++
 
 WORKDIR /app
-COPY monitoring-backend/package.json monitoring-backend/package-lock.json* ./
-RUN npm ci --only=production
+COPY monitoring-backend/package.json ./
+RUN npm install --omit=dev --no-audit --no-fund
 
 # ── Stage 2: Runtime ────────────────────────────────────────────────────────
 FROM node:20-alpine AS runner

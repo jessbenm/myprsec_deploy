@@ -1,21 +1,18 @@
-# Development overrides — hot reload, exposed ports, no SSL
-# Applied automatically by docker compose when present.
-# Use: docker compose up
-# To run production locally: docker compose -f docker-compose.yml up
+# Development-only Docker Compose overrides.
+# Use with: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 
 name: mypresc
 
 services:
-
   frontend:
     build:
-      target: builder          # Stop at the build stage (has Node + hot reload)
+      target: builder
     command: ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5173"]
     ports:
       - "${VITE_PORT:-5173}:5173"
     volumes:
       - .:/app
-      - /app/node_modules       # Preserve container node_modules over host mount
+      - /app/node_modules
     environment:
       NODE_ENV: development
     healthcheck:
@@ -26,13 +23,12 @@ services:
     ports:
       - "${BACKEND_PORT:-3001}:${BACKEND_PORT:-3001}"
     volumes:
-      - ./monitoring-backend:/app:ro   # Source hot reload (node --watch)
+      - ./monitoring-backend:/app:ro
       - sqlite_dev_data:/data
     environment:
       NODE_ENV: development
     command: ["node", "--watch", "/app/index.js"]
 
-  # Nginx and certbot are not needed in dev — direct port access is used
   nginx:
     profiles:
       - prod

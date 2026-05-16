@@ -8,6 +8,7 @@ const http                = require('http');
 const { WebSocketServer } = require('ws');
 const Database            = require('better-sqlite3');
 const crypto              = require('crypto');
+const { createClient }    = require('redis');
 require('dotenv').config();
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -29,6 +30,12 @@ if (Buffer.from(process.env.ENCRYPTION_KEY, 'hex').length !== 32) {
 const app    = express();
 const server = http.createServer(app);
 const PORT   = process.env.PORT || 3001;
+const REDIS_URL = process.env.REDIS_URL || '';
+
+const redisClient = REDIS_URL ? createClient({ url: REDIS_URL }) : null;
+if (redisClient) {
+  redisClient.on('error', err => console.error('[redis]', err.message));
+}
 
 const defaultOrigins = [
   process.env.FRONTEND_URL,
@@ -550,6 +557,69 @@ function verifyPassword(password, salt, expectedHash) {
 
 function createAuthToken() { return crypto.randomBytes(32).toString('hex'); }
 
+function sessionCacheKey(token) {
+  return `mp_session:${token}`;
+}
+
+async function saveSession({ userId, token, expiresAt, ipAddress, createdAt }) {
+  const payload = {
+    user_id: userId,
+    token,
+    expires_at: expiresAt,
+    ip_address: ipAddress,
+    created_at: createdAt,
+  };
+
+  if (redisClient?.isReady) {
+    const ttlSeconds = Math.max(1, Math.ceil((expiresAt - Date.now()) / 1000));
+    await redisClient.set(sessionCacheKey(token), JSON.stringify(payload), { EX: ttlSeconds });
+    return payload;
+  }
+
+  stmtInsertSession.run(userId, token, expiresAt, ipAddress, createdAt);
+  return payload;
+}
+
+async function loadSession(token) {
+  if (redisClient?.isReady) {
+    const raw = await redisClient.get(sessionCacheKey(token));
+    if (!raw) return null;
+
+    const session = JSON.parse(raw);
+    if (!session || session.expires_at < Date.now()) {
+      await redisClient.del(sessionCacheKey(token));
+      return null;
+    }
+
+    const user = stmtSelectUserById.get(session.user_id);
+    if (!user) return null;
+
+    return {
+      sessionId: session.token,
+      token: session.token,
+      user,
+    };
+  }
+
+  const session = stmtSelectSession.get(token);
+  if (!session) return null;
+  if (session.expires_at < Date.now()) { stmtDeleteSessionByToken.run(token); return null; }
+  return {
+    sessionId: session.id,
+    token:     session.token,
+    user: { id: session.user_id, name: session.name, email: session.email,
+            created_at: session.created_at, updated_at: session.updated_at },
+  };
+}
+
+async function deleteSession(token) {
+  if (redisClient?.isReady) {
+    await redisClient.del(sessionCacheKey(token));
+    return;
+  }
+  stmtDeleteSessionByToken.run(token);
+}
+
 function buildAuthCookie(token, maxAge) {
   const sameSite = (process.env.COOKIE_SAMESITE || (process.env.NODE_ENV === 'production' ? 'None' : 'Lax')).trim();
   const parts = [`mp_session=${token}`, 'HttpOnly', 'Path=/', `SameSite=${sameSite}`];
@@ -576,25 +646,17 @@ function parseCookies(req) {
   }, {});
 }
 
-function getSessionUser(req) {
+async function getSessionUser(req) {
   const token = parseCookies(req).mp_session;
   if (!token) return null;
-  const session = stmtSelectSession.get(token);
-  if (!session) return null;
-  if (session.expires_at < Date.now()) { stmtDeleteSessionByToken.run(token); return null; }
-  return {
-    sessionId: session.id,
-    token:     session.token,
-    user: { id: session.user_id, name: session.name, email: session.email,
-            created_at: session.created_at, updated_at: session.updated_at },
-  };
+  return loadSession(token);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
 // PHASE 2 — requireAuth MIDDLEWARE
 // ══════════════════════════════════════════════════════════════════════════════
-function requireAuth(req, res, next) {
-  const session = getSessionUser(req);
+async function requireAuth(req, res, next) {
+  const session = await getSessionUser(req);
   if (!session) return res.status(401).json({ success: false, error: 'Authentication required' });
   req.authSession = session;
   next();
@@ -801,6 +863,7 @@ function cleanOldData() {
   db.prepare('DELETE FROM audit_log       WHERE timestamp < ?').run(auditCutoff);
 }
 function cleanupExpiredSessions() {
+  if (redisClient?.isReady) return;
   try { stmtDeleteExpiredSessions.run(Date.now()); } catch (e) { console.error('[sessions] cleanup:', e.message); }
 }
 cleanupExpiredSessions();
@@ -853,7 +916,7 @@ function groupDataByInterval(rows, rangeMs) {
 app.get('/api/health', (_req, res) => res.json({ ok: true, ts: Date.now() }));
 
 // ── POST /api/auth/signup ─────────────────────────────────────────────────────
-app.post('/api/auth/signup', (req, res) => {
+app.post('/api/auth/signup', async (req, res) => {
   try {
     const { name, email, password, confirmPassword } = req.body || {};
     if (!name || !email || !password || !confirmPassword)
@@ -882,7 +945,7 @@ app.post('/api/auth/signup', (req, res) => {
     stmtInsertUserSettings.run(userId, crypto.randomBytes(32).toString('hex'), now, now);
 
     const token = createAuthToken();
-    stmtInsertSession.run(userId, token, now + 24 * 60 * 60 * 1000, getClientIp(req), now);
+    await saveSession({ userId, token, expiresAt: now + 24 * 60 * 60 * 1000, ipAddress: getClientIp(req), createdAt: now });
     setAuthCookie(res, token);
 
     auditLog({ userId, action: 'User signup', category: 'security', ip: getClientIp(req) });
@@ -894,7 +957,7 @@ app.post('/api/auth/signup', (req, res) => {
 });
 
 // ── POST /api/auth/login ──────────────────────────────────────────────────────
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body || {};
     if (!email || !password)
@@ -912,7 +975,7 @@ app.post('/api/auth/login', (req, res) => {
 
     const token = createAuthToken();
     const now   = Date.now();
-    stmtInsertSession.run(user.id, token, now + 24 * 60 * 60 * 1000, getClientIp(req), now);
+    await saveSession({ userId: user.id, token, expiresAt: now + 24 * 60 * 60 * 1000, ipAddress: getClientIp(req), createdAt: now });
     setAuthCookie(res, token);
 
     auditLog({ userId: user.id, action: 'User login', category: 'security', ip: getClientIp(req) });
@@ -924,10 +987,10 @@ app.post('/api/auth/login', (req, res) => {
 });
 
 // ── POST /api/auth/logout ─────────────────────────────────────────────────────
-app.post('/api/auth/logout', (req, res) => {
+app.post('/api/auth/logout', async (req, res) => {
   try {
     const token = parseCookies(req).mp_session;
-    if (token) stmtDeleteSessionByToken.run(token);
+    if (token) await deleteSession(token);
     clearAuthCookie(res);
     return res.json({ success: true, message: 'Logged out successfully' });
   } catch (error) {
@@ -1022,7 +1085,7 @@ app.get('/api/auth/github/callback', async (req, res) => {
 
     // Create session & set cookie
     const token = createAuthToken();
-    stmtInsertSession.run(user.id, token, now + 24 * 60 * 60 * 1000, getClientIp(req), now);
+    await saveSession({ userId: user.id, token, expiresAt: now + 24 * 60 * 60 * 1000, ipAddress: getClientIp(req), createdAt: now });
     setAuthCookie(res, token);
     auditLog({ userId: user.id, action: 'User login via GitHub', category: 'security', ip: getClientIp(req) });
 
@@ -1774,9 +1837,9 @@ server.on('upgrade', (request, socket, head) => {
   }
 });
 
-wssById.on('connection', (ws, request, vpsSlug) => {
+wssById.on('connection', async (ws, request, vpsSlug) => {
   // Authenticate from the upgrade request cookie
-  const sessionData = getSessionUser(request);
+  const sessionData = await getSessionUser(request);
   if (!sessionData) {
     ws.send(JSON.stringify({ type: 'error', data: 'Authentication required' }));
     ws.close();
@@ -1844,10 +1907,23 @@ wssById.on('connection', (ws, request, vpsSlug) => {
 // ══════════════════════════════════════════════════════════════════════════════
 // START
 // ══════════════════════════════════════════════════════════════════════════════
-server.listen(PORT, () => {
-  console.log(`\n✅ Backend running on http://localhost:${PORT}`);
-  console.log(`🔒 Auth required on all /api/* routes (except /signup, /login, /logout, /health)`);
-  console.log(`🔐 Encryption: AES-256-GCM active for SSH passwords and tokens\n`);
-});
+async function start() {
+  if (redisClient) {
+    try {
+      await redisClient.connect();
+      console.log(`🧠 Redis session store connected at ${REDIS_URL}`);
+    } catch (error) {
+      console.error('[redis] connect failed:', error.message);
+    }
+  }
+
+  server.listen(PORT, () => {
+    console.log(`\n✅ Backend running on http://localhost:${PORT}`);
+    console.log(`🔒 Auth required on all /api/* routes (except /signup, /login, /logout, /health)`);
+    console.log(`🔐 Encryption: AES-256-GCM active for SSH passwords and tokens\n`);
+  });
+}
+
+start();
 
 

@@ -34,6 +34,7 @@ services:
       NODE_ENV: production
       PORT: ${BACKEND_PORT:-3001}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      REDIS_URL: redis://redis:6379
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
       FRONTEND_URL: ${FRONTEND_URL}
@@ -42,6 +43,9 @@ services:
       - sqlite_data:/data
     networks:
       - internal
+    depends_on:
+      redis:
+        condition: service_healthy
     healthcheck:
       test:
         - "CMD"
@@ -101,6 +105,22 @@ services:
       - certbot_www:/var/www/certbot
     networks:
       - external
+
+  redis:
+    image: redis:7-alpine
+    container_name: mypresc_redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    volumes:
+      - redis_data:/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
     # Renews every 12h; certbot only acts when cert is within 30 days of expiry
     entrypoint: >
       /bin/sh -c "trap exit TERM;
@@ -117,6 +137,8 @@ volumes:
     name: mypresc_certbot_certs
   certbot_www:
     name: mypresc_certbot_www
+  redis_data:
+    name: mypresc_redis_data
 
 # ── Networks ──────────────────────────────────────────────────────────────────
 networks:

@@ -1,4 +1,25 @@
-# Dependencies
+.git
+.github
+node_modules
+dist
+coverage
+*.log
+*.sqlite
+*.db
+.env
+.env.*
+README.local.md
+
+# Local backend runtime artifacts
+monitoring-backend/node_modules
+monitoring-backend/metrics-history.db
+monitoring-backend/vps-store.json
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo# Dependencies
 node_modules/
 monitoring-backend/node_modules/
 
