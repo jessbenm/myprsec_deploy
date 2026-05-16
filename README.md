@@ -105,10 +105,12 @@ For your domain `yamops.afaq.sa`, set these values in `.env`:
 | `CERTBOT_DOMAIN` | `yamops.afaq.sa` |
 | `NGINX_CONFIG` | **set to `nossl` for first deploy** |
 | `REDIS_URL` | `redis://redis:6379` (Docker session store) |
-| `HTTP_PORT` | `80` if this app is the public entry point |
-| `HTTPS_PORT` | `443` if this app is the public entry point |
+| `HTTP_PORT` | a free host port, for example `8081` |
+| `HTTPS_PORT` | a free host port, for example `8444` |
 
 > DNS: point `yamops.afaq.sa` A record to the VPS IP first. Verify: `dig +short yamops.afaq.sa`
+
+> If another app already uses ports 80/443 on the VPS, keep those ports for that app and use different host ports here. In that case, the app is reached as `http://yamops.afaq.sa:8081` until SSL is enabled with a separate setup.
 
 ### 3.3 First start — HTTP only
 
@@ -116,7 +118,7 @@ For your domain `yamops.afaq.sa`, set these values in `.env`:
 # NGINX_CONFIG=nossl must be set in .env for the first start
 docker compose up -d
 docker compose ps
-curl http://yamops.afaq.sa/healthz   # expected: ok
+curl http://yamops.afaq.sa:8081/healthz   # expected: ok
 ```
 
 ### 3.4 Obtain SSL certificate
@@ -128,12 +130,12 @@ chmod +x infra/scripts/init-ssl.sh
 ./infra/scripts/init-ssl.sh             # real request
 ```
 
-The script: verifies nginx is reachable on port 80 for `yamops.afaq.sa` → requests cert from Let's Encrypt → sets `NGINX_CONFIG=ssl` → reloads nginx.
+The script: verifies nginx is reachable on the configured host HTTP port for `yamops.afaq.sa` → requests cert from Let's Encrypt. If you keep a non-standard HTTP port, you must use a DNS-01 challenge or temporarily free port 80 for the certificate step.
 
 ### 3.5 Verify HTTPS
 
 ```bash
-curl https://yamops.afaq.sa/healthz   # expected: ok
+curl https://yamops.afaq.sa:8444/healthz   # expected: ok
 ```
 
 ---
