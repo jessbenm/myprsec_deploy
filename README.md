@@ -98,24 +98,24 @@ For your domain `yamops.afaq.sa`, set these values in `.env`:
 |----------|-------------|
 | `DOMAIN` | `yamops.afaq.sa` |
 | `ENCRYPTION_KEY` | 64 hex chars — `node -e "require('crypto')..."` |
-| `FRONTEND_URL` | `https://yamops.afaq.sa` |
-| `VITE_API_URL` | `https://yamops.afaq.sa` |
-| `VITE_WS_URL` | `wss://yamops.afaq.sa` |
+| `FRONTEND_URL` | `http://yamops.afaq.sa:8081` |
+| `VITE_API_URL` | `http://yamops.afaq.sa:8081` |
+| `VITE_WS_URL` | `ws://yamops.afaq.sa:8081` |
 | `CERTBOT_EMAIL` | your email |
 | `CERTBOT_DOMAIN` | `yamops.afaq.sa` |
 | `NGINX_CONFIG` | **set to `nossl` for first deploy** |
 | `REDIS_URL` | `redis://redis:6379` (Docker session store) |
-| `HTTP_PORT` | a free host port, for example `8081` |
-| `HTTPS_PORT` | a free host port, for example `8444` |
+| `HTTP_PORT` | `8081` |
+| `HTTPS_PORT` | `8444` |
 
 > DNS: point `yamops.afaq.sa` A record to the VPS IP first. Verify: `dig +short yamops.afaq.sa`
 
-> If another app already uses ports 80/443 on the VPS, keep those ports for that app and use different host ports here. In that case, the app is reached as `http://yamops.afaq.sa:8081` until SSL is enabled with a separate setup.
+> This app must use its own host ports. If another app already owns `80/443`, keep them for that app and use `8081/8444` here.
 
 ### 3.3 First start — HTTP only
 
 ```bash
-# NGINX_CONFIG=nossl must be set in .env for the first start
+# NGINX_CONFIG=nossl must be set in .env
 docker compose up -d
 docker compose ps
 curl http://yamops.afaq.sa:8081/healthz   # expected: ok
@@ -130,7 +130,7 @@ chmod +x infra/scripts/init-ssl.sh
 ./infra/scripts/init-ssl.sh             # real request
 ```
 
-The script: verifies nginx is reachable on the configured host HTTP port for `yamops.afaq.sa` → requests cert from Let's Encrypt. If you keep a non-standard HTTP port, you must use a DNS-01 challenge or temporarily free port 80 for the certificate step.
+The script: verifies nginx is reachable on the configured host HTTP port for `yamops.afaq.sa` → requests cert from Let's Encrypt. If you keep alternate ports, use DNS-01 or temporarily free port 80 for the certificate step.
 
 ### 3.5 Verify HTTPS
 
@@ -184,8 +184,8 @@ docker compose down -v                       # STOP + DELETE ALL DATA ⚠️
 
 | Variable | Value |
 |----------|-------|
-| `VITE_API_URL` | `https://yamops.afaq.sa` |
-| `VITE_WS_URL` | `wss://yamops.afaq.sa` |
+| `VITE_API_URL` | `http://yamops.afaq.sa:8081` |
+| `VITE_WS_URL` | `ws://yamops.afaq.sa:8081` |
 
 The `.env` on the VPS must already exist with all required secrets. CI only updates `IMAGE_TAG` and `REGISTRY`.
 
