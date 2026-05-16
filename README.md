@@ -92,27 +92,31 @@ cp infra/.env.example .env
 nano .env
 ```
 
-Required values:
+For your domain `yamops.afaq.sa`, set these values in `.env`:
 
 | Variable | Description |
 |----------|-------------|
-| `DOMAIN` | `mypresc.example.com` |
+| `DOMAIN` | `yamops.afaq.sa` |
 | `ENCRYPTION_KEY` | 64 hex chars — `node -e "require('crypto')..."` |
-| `FRONTEND_URL` | `https://mypresc.example.com` |
+| `FRONTEND_URL` | `https://yamops.afaq.sa` |
+| `VITE_API_URL` | `https://yamops.afaq.sa` |
+| `VITE_WS_URL` | `wss://yamops.afaq.sa` |
 | `CERTBOT_EMAIL` | your email |
-| `CERTBOT_DOMAIN` | same as DOMAIN |
+| `CERTBOT_DOMAIN` | `yamops.afaq.sa` |
 | `NGINX_CONFIG` | **set to `nossl` for first deploy** |
 | `REDIS_URL` | `redis://redis:6379` (Docker session store) |
+| `HTTP_PORT` | `80` if this app is the public entry point |
+| `HTTPS_PORT` | `443` if this app is the public entry point |
 
-> DNS: point your domain A record to the VPS IP first. Verify: `dig +short yourdomain.com`
+> DNS: point `yamops.afaq.sa` A record to the VPS IP first. Verify: `dig +short yamops.afaq.sa`
 
 ### 3.3 First start — HTTP only
 
 ```bash
-# NGINX_CONFIG=nossl must be set in .env
+# NGINX_CONFIG=nossl must be set in .env for the first start
 docker compose up -d
 docker compose ps
-curl http://your-domain.com/healthz   # expected: ok
+curl http://yamops.afaq.sa/healthz   # expected: ok
 ```
 
 ### 3.4 Obtain SSL certificate
@@ -124,12 +128,12 @@ chmod +x infra/scripts/init-ssl.sh
 ./infra/scripts/init-ssl.sh             # real request
 ```
 
-The script: verifies nginx is on port 80 → requests cert from Let's Encrypt → sets `NGINX_CONFIG=ssl` → reloads nginx.
+The script: verifies nginx is reachable on port 80 for `yamops.afaq.sa` → requests cert from Let's Encrypt → sets `NGINX_CONFIG=ssl` → reloads nginx.
 
 ### 3.5 Verify HTTPS
 
 ```bash
-curl https://your-domain.com/healthz   # expected: ok
+curl https://yamops.afaq.sa/healthz   # expected: ok
 ```
 
 ---
@@ -178,8 +182,8 @@ docker compose down -v                       # STOP + DELETE ALL DATA ⚠️
 
 | Variable | Value |
 |----------|-------|
-| `VITE_API_URL` | `https://your-domain.com` |
-| `VITE_WS_URL` | `wss://your-domain.com` |
+| `VITE_API_URL` | `https://yamops.afaq.sa` |
+| `VITE_WS_URL` | `wss://yamops.afaq.sa` |
 
 The `.env` on the VPS must already exist with all required secrets. CI only updates `IMAGE_TAG` and `REGISTRY`.
 
