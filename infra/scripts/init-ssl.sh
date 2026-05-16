@@ -56,7 +56,6 @@ docker compose --env-file "$ENV_FILE" run --rm certbot \
     certonly \
     --manual \
     --preferred-challenges dns \
-    --manual-public-ip-logging-ok \
     --email "${CERTBOT_EMAIL}" \
     --agree-tos \
     --no-eff-email \
