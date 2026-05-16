@@ -5,7 +5,14 @@ set -e
 
 CONFIG="${NGINX_CONFIG:-ssl}"
 TEMPLATE_DIR="/etc/nginx/app-templates"
-TEMPLATE="${TEMPLATE_DIR}/app-${CONFIG}.conf"
+# Map config names to actual template filenames:
+# - nossl -> app-nossl.conf
+# - ssl   -> app.conf (existing template is app.conf)
+if [ "${CONFIG}" = "ssl" ]; then
+    TEMPLATE="${TEMPLATE_DIR}/app.conf"
+else
+    TEMPLATE="${TEMPLATE_DIR}/app-${CONFIG}.conf"
+fi
 OUTPUT="/etc/nginx/conf.d/app.conf"
 
 if [ -z "${DOMAIN}" ]; then
