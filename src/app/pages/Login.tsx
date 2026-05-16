@@ -60,7 +60,7 @@ export default function Login() {
   };
 
   const handleGithub = () => {
-    window.location.href = resolveAuthUrl('/api/auth/github');
+    window.location.href = resolveAuthUrl('/auth/github');
   };
 
   if (checking) {

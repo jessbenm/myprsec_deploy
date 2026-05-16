@@ -1,6 +1,6 @@
 import { resolveAuthUrl } from './lib/runtime';
 
-export const AUTH_API_URL = '/api/auth';
+export const AUTH_API_URL = '/auth';
 
 type AuthPayload = Record<string, unknown>;
 
@@ -28,7 +28,7 @@ interface FullUser {
 }
 
 export async function signupUser(payload: { name: string; email: string; password: string; confirmPassword: string; }) {
-  return request<{ success: boolean; data: { user: FullUser } }>('/signup', payload);
+  return request<{ success: boolean; data: { user: FullUser } }>('/register', payload);
 }
 
 export async function loginUser(payload: { email: string; password: string; }) {
@@ -36,7 +36,7 @@ export async function loginUser(payload: { email: string; password: string; }) {
 }
 
 export async function getCurrentUser() {
-  return request<{ success: boolean; data: { user: FullUser } }>('/me');
+  return request<{ success: boolean; data: { user: FullUser } }>('/');
 }
 
 export async function updateProfile(payload: { name: string; phone: string; location: string; timezone: string; }) {
