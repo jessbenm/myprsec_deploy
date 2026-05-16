@@ -16,7 +16,7 @@ services:
     networks:
       - internal
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost/healthz"]
+      test: ["CMD", "test", "-f", "/usr/share/nginx/html/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3
