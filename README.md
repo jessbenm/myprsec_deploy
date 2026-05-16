@@ -130,13 +130,15 @@ chmod +x infra/scripts/init-ssl.sh
 ./infra/scripts/init-ssl.sh             # real request
 ```
 
-The script: verifies nginx is reachable on the configured host HTTP port for `yamops.afaq.sa` → requests cert from Let's Encrypt. If you keep alternate ports, use DNS-01 or temporarily free port 80 for the certificate step.
+The script uses DNS-01 validation, so it does not need ports 80/443 during certificate issuance. When certbot asks for a TXT record, create `_acme-challenge.yamops.afaq.sa` in your DNS provider and paste the exact value it shows.
 
 ### 3.5 Verify HTTPS
 
 ```bash
 curl https://yamops.afaq.sa:8444/healthz   # expected: ok
 ```
+
+If your DNS provider supports API-based TXT automation, you can later replace the manual DNS-01 step with an automated plugin, but the current script works with any provider.
 
 ---
 
