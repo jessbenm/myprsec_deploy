@@ -8,6 +8,10 @@ dist/
 build/
 .vite/
 
+# Local runtime data
+monitoring-backend/metrics-history.db
+monitoring-backend/vps-store.json
+
 # IDE
 .vscode/
 .idea/
