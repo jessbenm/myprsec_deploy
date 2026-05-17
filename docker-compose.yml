@@ -5,10 +5,8 @@ services:
   # ── React SPA (built with Vite, served by nginx) ──────────────────────────
   frontend:
     build:
-      # Build from the dedicated frontend repository in the workspace so
-      # updates pushed to that repo are picked up without copying files.
-      context: ../App_mypresc/mypresc-frontend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: Dockerfile.frontend
       args:
         VITE_API_URL: ${VITE_API_URL:-}
         VITE_WS_URL: ${VITE_WS_URL:-}
