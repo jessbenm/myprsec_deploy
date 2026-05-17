@@ -43,6 +43,7 @@ services:
       - sqlite_data:/data
     networks:
       - internal
+      - external
     depends_on:
       redis:
         condition: service_healthy
