@@ -68,7 +68,7 @@ export default function Signup() {
     setLoading(true);
     try {
       await signupUser({ name: trimmedName, email: trimmedEmail, password, confirmPassword });
-      navigate('/', { replace: true });
+      navigate('/login', { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Impossible de créer le compte.');
       setLoading(false);

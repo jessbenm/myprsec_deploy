@@ -15,13 +15,22 @@ export default function Root() {
     let active = true;
     getCurrentUser()
       .then(res => {
-        if (active) {
+        if (!active) return;
+
+        const currentUser = res.success ? res.data?.user : null;
+        if (currentUser) {
+          setUser(currentUser as any);
           setIsAuth(true);
-          if (res.success && res.data?.user) setUser(res.data.user as any);
+          return;
         }
+
+        setUser(null);
+        setIsAuth(false);
       })
       .catch(() => {
-        if (active) setIsAuth(false);
+        if (!active) return;
+        setUser(null);
+        setIsAuth(false);
       });
 
     return () => { active = false; };

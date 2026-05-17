@@ -4,6 +4,7 @@ import { Eye, EyeOff, Github, Chrome, Loader2 } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router';
 import { getCurrentUser, loginUser } from '../auth-api';
 import { resolveAuthUrl } from '../lib/runtime';
+import { useUser } from '../../user-context';
 
 const EMAIL_REGEX = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$/;
 
@@ -21,6 +22,7 @@ export default function Login() {
   const [checking, setChecking] = useState(true);
   const navigate      = useNavigate();
   const [searchParams] = useSearchParams();
+  const { setUser } = useUser();
 
   useEffect(() => {
     // Check OAuth error from URL
@@ -51,7 +53,10 @@ export default function Login() {
 
     setLoading(true);
     try {
-      await loginUser({ email: trimmedEmail, password });
+      const res = await loginUser({ email: trimmedEmail, password });
+      if (res.success && res.data?.user) {
+        setUser(res.data.user as any);
+      }
       navigate('/', { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Connexion impossible. Vérifiez vos identifiants.');

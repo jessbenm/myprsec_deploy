@@ -32,6 +32,8 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
       const res = await getCurrentUser();
       if (res.success && res.data?.user) {
         setUser(res.data.user as AppUser);
+      } else {
+        setUser(null);
       }
     } catch {
       setUser(null);
