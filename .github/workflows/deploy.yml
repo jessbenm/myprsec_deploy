@@ -1,82 +1,50 @@
-name: Build & Deploy
+name: CI / CD — MyPresc
 
 on:
   push:
     branches: [main]
-  workflow_dispatch:         # Allow manual trigger from GitHub UI
-
-env:
-  REGISTRY: ghcr.io/${{ github.repository_owner }}
-  IMAGE_TAG: ${{ github.sha }}
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
 
 jobs:
-  # ── Build & push images to GHCR ───────────────────────────────────────────
-  build:
-    name: Build Docker images
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Job 1 — CI : vérification TypeScript + build Vite
+  # ─────────────────────────────────────────────────────────────────────────────
+  ci:
+    name: CI — TypeScript & build
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          node-version: '20'
 
-      - name: Build & push frontend
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: Dockerfile.frontend
-          push: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/mypresc-frontend:${{ github.sha }}
-            ghcr.io/${{ github.repository_owner }}/mypresc-frontend:latest
-          build-args: |
-            VITE_API_URL=${{ vars.VITE_API_URL }}
-            VITE_WS_URL=${{ vars.VITE_WS_URL }}
+      - name: Install dependencies
+        run: npm install
 
-      - name: Build & push backend
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: Dockerfile.backend
-          push: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/mypresc-backend:${{ github.sha }}
-            ghcr.io/${{ github.repository_owner }}/mypresc-backend:latest
+      - name: TypeScript — vérification des types
+        run: npx tsc --noEmit
 
-      - name: Build & push nginx
-        uses: docker/build-push-action@v5
-        with:
-          context: ./infra
-          file: ./infra/Dockerfile.nginx
-          push: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/mypresc-nginx:${{ github.sha }}
-            ghcr.io/${{ github.repository_owner }}/mypresc-nginx:latest
+      - name: Vite — build de production
+        run: npm run build
+        env:
+          VITE_API_URL: ${{ vars.VITE_API_URL }}
+          VITE_WS_URL: ${{ vars.VITE_WS_URL }}
 
-  # ── Deploy to VPS via SSH ──────────────────────────────────────────────────
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Job 2 — Deploy : uniquement sur push main, après que CI passe
+  # ─────────────────────────────────────────────────────────────────────────────
   deploy:
-    name: Deploy to VPS
-    needs: build
+    name: Deploy → VPS
+    needs: ci
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
-    environment: production     # Requires manual approval if configured
+    environment: production
 
     steps:
       - name: Deploy via SSH
@@ -85,45 +53,88 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          port: ${{ secrets.VPS_PORT || 22 }}
+          port: ${{ secrets.VPS_PORT || '22' }}
+          command_timeout: 20m
           script: |
             set -e
-            cd ${{ secrets.VPS_DEPLOY_PATH }}
+            cd "${{ secrets.VPS_DEPLOY_PATH }}"
 
-            # Authenticate with GHCR to pull private images
-            echo "${{ secrets.GITHUB_TOKEN }}" | \
-              docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            echo "══════════════════════════════════════"
+            echo " MyPresc Deploy — ${{ github.sha }}"
+            echo "══════════════════════════════════════"
 
-            # Update the image tag in .env
-            sed -i "s|^IMAGE_TAG=.*|IMAGE_TAG=${{ github.sha }}|" .env
-            sed -i "s|^REGISTRY=.*|REGISTRY=ghcr.io/${{ github.repository_owner }}|" .env
+            echo ""
+            echo "── [1/5] Pull du code ──"
+            git pull --ff-only
 
-            # Pull new images
-            docker compose pull
+            echo ""
+            echo "── [2/5] Build des images Docker ──"
+            docker compose build --no-cache
 
-            # Restart with zero-downtime (old containers serve until new ones are healthy)
+            echo ""
+            echo "── [3/5] Redémarrage des services ──"
             docker compose up -d --remove-orphans
 
-            # Clean up old images (keep last 3 per service)
+            echo ""
+            echo "── [4/5] Attente des healthchecks ──"
+            TIMEOUT=120
+            ELAPSED=0
+            while [ $ELAPSED -lt $TIMEOUT ]; do
+              sleep 5
+              ELAPSED=$((ELAPSED + 5))
+              UNHEALTHY=$(docker compose ps 2>/dev/null | grep -cE "starting|unhealthy" || true)
+              if [ "$UNHEALTHY" -eq 0 ]; then
+                echo "  Tous les services sont healthy (${ELAPSED}s)"
+                break
+              fi
+              echo "  En attente... (${ELAPSED}s/${TIMEOUT}s)"
+              if [ $ELAPSED -ge $TIMEOUT ]; then
+                echo ""
+                echo "ERREUR: Timeout — services pas healthy après ${TIMEOUT}s"
+                docker compose ps
+                docker compose logs --tail=40
+                exit 1
+              fi
+            done
+
+            echo ""
+            echo "── [5/5] État final ──"
+            docker compose ps
+
+            echo ""
+            echo "── Nettoyage images obsolètes ──"
             docker image prune -f
 
-            echo "Deployed ${{ github.sha }} to ${{ secrets.VPS_HOST }}"
+            echo ""
+            echo "✓ Déploiement terminé — commit: ${{ github.sha }}"
 
-  # ── Notify on failure ─────────────────────────────────────────────────────
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Job 3 — Notification en cas d'échec (issue GitHub auto)
+  # ─────────────────────────────────────────────────────────────────────────────
   notify-failure:
-    name: Notify on failure
-    needs: [build, deploy]
+    name: Notifier en cas d'échec
+    needs: [ci, deploy]
     if: failure()
     runs-on: ubuntu-latest
     steps:
-      - name: Create GitHub issue on deploy failure
+      - name: Créer une issue GitHub
         uses: actions/github-script@v7
         with:
           script: |
+            const sha = context.sha.substring(0, 7)
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
             github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `Deploy failed: ${context.sha.substring(0, 7)}`,
-              body: `Deployment workflow failed for commit ${context.sha}.\n\nRun: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              title: `CI/CD échoué — ${sha}`,
+              body: [
+                `## Échec du pipeline CI/CD`,
+                ``,
+                `| Champ    | Valeur |`,
+                `|----------|--------|`,
+                `| Commit   | \`${context.sha}\` |`,
+                `| Branche  | \`${context.ref}\` |`,
+                `| Run      | [Voir les logs](${runUrl}) |`,
+              ].join('\n'),
               labels: ['bug', 'deployment']
-            });
+            })
