@@ -127,6 +127,7 @@ services:
         condition: service_healthy
     networks:
       - internal
+      - external
     volumes:
       - ./rag/index:/app/index
 
