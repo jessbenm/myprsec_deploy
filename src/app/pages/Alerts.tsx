@@ -108,7 +108,6 @@ const CSS = (isDark: boolean) => `
 
   .alr-root {
     font-family: 'Rajdhani', sans-serif;
-    min-height: 100vh;
     color: ${isDark ? '#e2e8f0' : '#0f172a'};
     padding: 24px;
     position: relative;

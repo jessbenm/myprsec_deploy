@@ -156,7 +156,7 @@ export default function Profile() {
   ];
 
   return (
-    <div className="flex flex-col gap-4 text-sm max-w-4xl mx-auto">
+    <div className="flex flex-col gap-4 text-sm max-w-4xl mx-auto p-6">
 
       {/* ── Header card ──────────────────────────────────────────── */}
       <motion.div className={`rounded-xl p-6 ${card}`} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>

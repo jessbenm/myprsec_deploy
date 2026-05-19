@@ -20,6 +20,7 @@ interface ManageModalProps {
 
 export default function ManageModal({ server, onClose, onDisconnect, onOpenTerminal }: ManageModalProps) {
   const [disconnecting, setDisconnecting] = useState(false);
+  const [deleteError,   setDeleteError]   = useState<string | null>(null);
   const [showConfirm,   setShowConfirm]   = useState(false);
   const [testing,       setTesting]       = useState(false);
   const [testResult,    setTestResult]    = useState<{ ok: boolean; message: string } | null>(null);
@@ -29,11 +30,17 @@ export default function ManageModal({ server, onClose, onDisconnect, onOpenTermi
 
   const handleDisconnect = async () => {
     setDisconnecting(true);
+    setDeleteError(null);
     try {
-      await apiFetch(`/api/vps/${server.id}`, { method: 'DELETE' });
+      const res = await apiFetch(`/api/vps/${server.id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Erreur serveur (${res.status})`);
+      }
       onDisconnect(server.id);
       onClose();
-    } catch {
+    } catch (err: any) {
+      setDeleteError(err.message);
       setDisconnecting(false);
     }
   };
@@ -187,17 +194,22 @@ export default function ManageModal({ server, onClose, onDisconnect, onOpenTermi
 
           {/* Disconnect */}
           {!showConfirm ? (
-            <button onClick={() => setShowConfirm(true)}
+            <button onClick={() => { setShowConfirm(true); setDeleteError(null); }}
               className="flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-semibold transition-all w-full"
               style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#ef4444' }}>
               <Trash2 size={13} />
-              Disconnect VPS
+              Supprimer le VPS
             </button>
           ) : (
             <div className="rounded-xl p-3" style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.4)' }}>
               <p className="text-xs text-[#ef4444] font-medium text-center mb-2.5">
                 ⚠️ Supprimer <strong>{server.name}</strong> ? Cette action est irréversible.
               </p>
+              {deleteError && (
+                <p className="text-[10px] text-[#fca5a5] text-center mb-2 flex items-center justify-center gap-1">
+                  <AlertTriangle size={10} /> {deleteError}
+                </p>
+              )}
               <div className="flex gap-2">
                 <button onClick={() => setShowConfirm(false)}
                   className="flex-1 py-2 rounded-lg text-xs font-semibold"

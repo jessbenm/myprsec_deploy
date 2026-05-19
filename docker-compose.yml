@@ -38,6 +38,7 @@ services:
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
       FRONTEND_URL: ${FRONTEND_URL}
+      RAG_URL: http://rag:3002
     volumes:
       # SQLite database persisted in a named volume — never inside the container
       - sqlite_data:/data
@@ -106,6 +107,28 @@ services:
       - certbot_www:/var/www/certbot
     networks:
       - external
+
+  # ── RAG DevOps Assistant ─────────────────────────────────────────────────────
+  rag:
+    build: ./rag
+    container_name: mypresc_rag
+    restart: unless-stopped
+    environment:
+      RAG_PORT: 3002
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      GROQ_MODEL: ${GROQ_MODEL:-llama-3.3-70b-versatile}
+      BACKEND_URL: http://backend:${BACKEND_PORT:-3001}
+      JWT_SECRET: ${JWT_SECRET:-}
+      KNOWLEDGE_BASE_PATH: /app/knowledge-base
+      INDEX_PATH: /app/index/knowledge-index.json
+      RAG_TOP_K: ${RAG_TOP_K:-5}
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - internal
+    volumes:
+      - ./rag/index:/app/index
 
   redis:
     image: redis:7-alpine

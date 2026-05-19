@@ -23,7 +23,6 @@ const CSS = `
 
   .set-root {
     font-family: 'Inter', sans-serif;
-    min-height: 100vh;
     background: var(--set-bg);
     color: var(--set-text);
     position: relative;

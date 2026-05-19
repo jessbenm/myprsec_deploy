@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router';
-import { Home, GitBranch, BarChart3, History, Server, Settings, User, Moon, Sun, Bell, LogOut } from 'lucide-react';
+import { Home, GitBranch, BarChart3, History, Server, Settings, User, Moon, Sun, Bell, LogOut, Bot } from 'lucide-react';
 import { useTheme } from '../theme-context';
 import { logoutUser } from '../auth-api';
 
@@ -10,6 +10,7 @@ const navItems = [
   { icon: BarChart3, path: '/monitoring', label: 'Monitoring' },
   { icon: History,   path: '/history',    label: 'History'    },
   { icon: Server,    path: '/servers',    label: 'Servers'    },
+  { icon: Bot,       path: '/assistant',  label: 'Assistant DevOps' },
   { icon: Settings,  path: '/settings',   label: 'Settings'   },
 ];
 

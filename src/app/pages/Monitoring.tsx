@@ -256,7 +256,7 @@ export default function Monitoring() {
     : (metrics?.containers.map(c => getShortName(c.name)) ?? []);
 
   return (
-    <div className="flex flex-col gap-2.5 text-sm">
+    <div className="flex flex-col gap-2.5 text-sm p-6">
 
       {/* ── Status bar ──────────────────────────────────────────────────────── */}
       <div className={`flex items-center justify-between rounded-xl px-4 py-2 ${card}`}>

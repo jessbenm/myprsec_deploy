@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Outlet, Navigate } from 'react-router';
+import { Outlet, Navigate, useLocation } from 'react-router';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import { useTheme } from './theme-context';
@@ -9,6 +9,8 @@ import { useUser } from '../user-context';
 export default function Root() {
   const { theme } = useTheme();
   const { setUser } = useUser();
+  const location = useLocation();
+  const isFullscreen = location.pathname === '/assistant';
   const [isAuth, setIsAuth] = useState<boolean | null>(null);
 
   useEffect(() => {
@@ -62,9 +64,9 @@ export default function Root() {
       {theme === 'dark' && <div className="noise-overlay" />}
 
       <Sidebar />
-      <div className="relative z-10 ml-[72px] flex h-full flex-col overflow-hidden">
+      <div className="relative z-10 ml-[60px] flex h-full flex-col overflow-hidden">
         <Header />
-        <main className="flex-1 overflow-auto p-6">
+        <main className={`flex-1 ${isFullscreen ? 'overflow-hidden' : 'overflow-auto'}`}>
           <Outlet />
         </main>
       </div>

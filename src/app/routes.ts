@@ -10,6 +10,7 @@ import Servers from "./pages/Servers";
 import Settings from "./pages/Settings";
 import Profile from "./pages/Profile";
 import Alerts from "./pages/Alerts";
+import DevOpsAssistant from "./pages/DevOpsAssistant";
 
 export const router = createBrowserRouter([
   {
@@ -32,6 +33,7 @@ export const router = createBrowserRouter([
       { path: "settings",   Component: Settings   },
       { path: "profile",    Component: Profile    },
       { path: "alerts",     Component: Alerts     },
+      { path: "assistant",  Component: DevOpsAssistant },
     ],
   },
 ]);

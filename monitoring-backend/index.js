@@ -355,6 +355,167 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_oauth_provider ON oauth_accounts(provider, provider_id);
 `);
 
+// ── Phase 2 — Tool & project detection tables ─────────────────────────────────
+db.exec(`
+  CREATE TABLE IF NOT EXISTS vps_detected_tools (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      INTEGER NOT NULL,
+    vps_id       INTEGER NOT NULL,
+    tool_name    TEXT    NOT NULL,
+    tool_version TEXT,
+    is_active    INTEGER DEFAULT 0,
+    detected_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    raw_output   TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (vps_id)  REFERENCES vps(id)  ON DELETE CASCADE,
+    UNIQUE(user_id, vps_id, tool_name)
+  );
+  CREATE INDEX IF NOT EXISTS idx_detected_tools_vps ON vps_detected_tools(user_id, vps_id);
+
+  CREATE TABLE IF NOT EXISTS vps_detected_projects (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      INTEGER NOT NULL,
+    vps_id       INTEGER NOT NULL,
+    project_name TEXT    NOT NULL,
+    project_path TEXT    NOT NULL,
+    project_type TEXT,
+    tech_stack   TEXT,
+    is_running   INTEGER DEFAULT 0,
+    detected_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (vps_id)  REFERENCES vps(id)  ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_detected_projects_vps ON vps_detected_projects(user_id, vps_id);
+
+  -- ── Phase 3 — GitLab integration ──────────────────────────────────────────
+  CREATE TABLE IF NOT EXISTS gitlab_integrations (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER NOT NULL,
+    vps_id          INTEGER NOT NULL,
+    gitlab_url      TEXT    NOT NULL,
+    project_id      TEXT    NOT NULL,
+    token_encrypted TEXT    NOT NULL,
+    enabled         INTEGER DEFAULT 1,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (vps_id)  REFERENCES vps(id)  ON DELETE CASCADE
+  );
+  CREATE TABLE IF NOT EXISTS gitlab_pipeline_runs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL,
+    vps_id      INTEGER NOT NULL,
+    pipeline_id TEXT    NOT NULL,
+    status      TEXT,
+    ref         TEXT,
+    sha         TEXT,
+    duration    INTEGER,
+    started_at  DATETIME,
+    finished_at DATETIME,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (vps_id)  REFERENCES vps(id)  ON DELETE CASCADE
+  );
+
+  -- ── Phase 3 — Kubernetes snapshots ────────────────────────────────────────
+  CREATE TABLE IF NOT EXISTS k8s_snapshots (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id          INTEGER NOT NULL,
+    vps_id           INTEGER NOT NULL,
+    nodes_json       TEXT,
+    pods_json        TEXT,
+    deployments_json TEXT,
+    services_json    TEXT,
+    namespaces_json  TEXT,
+    collected_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (vps_id)  REFERENCES vps(id)  ON DELETE CASCADE
+  );
+
+  -- ── Phase 3 — Ansible playbooks ───────────────────────────────────────────
+  CREATE TABLE IF NOT EXISTS ansible_playbooks (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id          INTEGER NOT NULL,
+    vps_id           INTEGER NOT NULL,
+    playbook_path    TEXT    NOT NULL,
+    playbook_name    TEXT    NOT NULL,
+    last_run_at      DATETIME,
+    last_run_status  TEXT,
+    discovered_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (vps_id)  REFERENCES vps(id)  ON DELETE CASCADE
+  );
+
+  -- ── Phase 3 — Terraform workspaces ────────────────────────────────────────
+  CREATE TABLE IF NOT EXISTS terraform_workspaces (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id        INTEGER NOT NULL,
+    vps_id         INTEGER NOT NULL,
+    workspace_path TEXT    NOT NULL,
+    workspace_name TEXT,
+    resource_count INTEGER DEFAULT 0,
+    last_apply_at  DATETIME,
+    state_json     TEXT,
+    scanned_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (vps_id)  REFERENCES vps(id)  ON DELETE CASCADE
+  );
+
+  -- ── Phase 3 — Prometheus integration ──────────────────────────────────────
+  CREATE TABLE IF NOT EXISTS prometheus_integrations (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER NOT NULL,
+    vps_id          INTEGER NOT NULL,
+    prometheus_url  TEXT    NOT NULL DEFAULT 'http://localhost:9090',
+    enabled         INTEGER DEFAULT 1,
+    last_checked_at DATETIME,
+    is_reachable    INTEGER DEFAULT 0,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (vps_id)  REFERENCES vps(id)  ON DELETE CASCADE
+  );
+  CREATE TABLE IF NOT EXISTS prometheus_alerts (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    vps_id     INTEGER NOT NULL,
+    alert_name TEXT,
+    severity   TEXT,
+    state      TEXT,
+    summary    TEXT,
+    fired_at   DATETIME,
+    resolved_at DATETIME,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (vps_id)  REFERENCES vps(id)  ON DELETE CASCADE
+  );
+
+  -- ── Phase 3 — Jenkins integration ─────────────────────────────────────────
+  CREATE TABLE IF NOT EXISTS jenkins_integrations (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER NOT NULL,
+    vps_id          INTEGER NOT NULL,
+    jenkins_url     TEXT    NOT NULL,
+    username        TEXT    NOT NULL,
+    token_encrypted TEXT    NOT NULL,
+    enabled         INTEGER DEFAULT 1,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (vps_id)  REFERENCES vps(id)  ON DELETE CASCADE
+  );
+  CREATE TABLE IF NOT EXISTS jenkins_builds (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      INTEGER NOT NULL,
+    vps_id       INTEGER NOT NULL,
+    job_name     TEXT    NOT NULL,
+    build_number INTEGER,
+    status       TEXT,
+    duration     INTEGER,
+    timestamp    DATETIME,
+    url          TEXT,
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (vps_id)  REFERENCES vps(id)  ON DELETE CASCADE
+  );
+`);
+
 // ── Add profile columns to users if they don't exist (migration) ─────────────
 if (!hasColumn('users', 'phone'))    db.exec('ALTER TABLE users ADD COLUMN phone TEXT NOT NULL DEFAULT ""');
 if (!hasColumn('users', 'location')) db.exec('ALTER TABLE users ADD COLUMN location TEXT NOT NULL DEFAULT ""');
@@ -1265,11 +1426,13 @@ app.get('/api/vps', (req, res) => {
 // ── DELETE /api/vps/:id — hard delete (cascades to metrics, snapshots, etc.) ─
 app.delete('/api/vps/:id', (req, res) => {
   try {
-    const userId = req.authSession.user.id;
-    const row    = db.prepare('SELECT id, slug FROM vps WHERE user_id = ? AND slug = ? AND deleted_at IS NULL').get(userId, req.params.id);
+    const userId  = req.authSession.user.id;
+    const slugRaw = req.params.id.trim();
+    // Cherche aussi par name en fallback si le slug ne matche pas
+    const row = db.prepare('SELECT id, slug FROM vps WHERE user_id = ? AND (slug = ? OR TRIM(slug) = ?) AND deleted_at IS NULL').get(userId, slugRaw, slugRaw);
     if (!row) {
-      console.warn(`❌ DELETE /api/vps: VPS "${req.params.id}" not found for user ${userId}`);
-      return res.status(404).json({ error: 'VPS not found' });
+      console.warn(`❌ DELETE /api/vps: VPS "${slugRaw}" not found for user ${userId}`);
+      return res.status(404).json({ error: 'VPS introuvable' });
     }
 
     // Soft delete instead of hard delete to preserve audit trail
@@ -1821,6 +1984,600 @@ app.get('/api/settings/audit-log', (req, res) => {
     })(),
   }));
   res.json({ entries });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PHASE 2 — VPS TOOL & PROJECT DETECTION
+// ══════════════════════════════════════════════════════════════════════════════
+
+const DETECTION_COMMANDS = [
+  { tool: 'docker',          cmd: 'docker --version 2>/dev/null || echo "NOT_FOUND"' },
+  { tool: 'docker-compose',  cmd: 'docker compose version 2>/dev/null || echo "NOT_FOUND"' },
+  { tool: 'kubectl',         cmd: 'kubectl version --client 2>/dev/null || echo "NOT_FOUND"' },
+  { tool: 'k3s',             cmd: 'which k3s 2>/dev/null || echo "NOT_FOUND"' },
+  { tool: 'microk8s',        cmd: 'which microk8s 2>/dev/null || echo "NOT_FOUND"' },
+  { tool: 'nginx',           cmd: 'nginx -v 2>&1 || echo "NOT_FOUND"' },
+  { tool: 'nginx-status',    cmd: 'systemctl is-active nginx 2>/dev/null || echo "NOT_FOUND"' },
+  { tool: 'gitlab-runner',   cmd: 'gitlab-runner --version 2>/dev/null || echo "NOT_FOUND"' },
+  { tool: 'jenkins',         cmd: 'systemctl is-active jenkins 2>/dev/null || echo "NOT_FOUND"' },
+  { tool: 'ansible',         cmd: 'ansible --version 2>/dev/null | head -1 || echo "NOT_FOUND"' },
+  { tool: 'terraform',       cmd: 'terraform version 2>/dev/null | head -1 || echo "NOT_FOUND"' },
+  { tool: 'prometheus',      cmd: 'systemctl is-active prometheus 2>/dev/null || echo "NOT_FOUND"' },
+  { tool: 'node',            cmd: 'node --version 2>/dev/null || echo "NOT_FOUND"' },
+  { tool: 'python3',         cmd: 'python3 --version 2>/dev/null || echo "NOT_FOUND"' },
+  { tool: 'java',            cmd: 'java -version 2>&1 | head -1 || echo "NOT_FOUND"' },
+  { tool: 'php',             cmd: 'php --version 2>/dev/null | head -1 || echo "NOT_FOUND"' },
+];
+
+const PROJECT_COMMANDS = [
+  'ls /var/www/ 2>/dev/null || echo "NOT_FOUND"',
+  'ls /opt/ 2>/dev/null || echo "NOT_FOUND"',
+  'find /home -name "docker-compose.yml" 2>/dev/null | head -10 || echo "NOT_FOUND"',
+  'find /opt -name "docker-compose.yml" 2>/dev/null | head -10 || echo "NOT_FOUND"',
+  'find /var/www -name "package.json" -maxdepth 3 2>/dev/null | head -10 || echo "NOT_FOUND"',
+  'find /var/www -name "requirements.txt" -maxdepth 3 2>/dev/null | head -10 || echo "NOT_FOUND"',
+  'find /var/www -name "pom.xml" -maxdepth 3 2>/dev/null | head -10 || echo "NOT_FOUND"',
+];
+
+const SCAN_CACHE_MS = 6 * 60 * 60 * 1000; // 6h
+
+function getVpsRowById(userId, vpsId) {
+  const row = db.prepare('SELECT * FROM vps WHERE user_id = ? AND id = ? AND deleted_at IS NULL').get(userId, vpsId);
+  if (!row) return null;
+  return { ...row, password: decrypt(row.ssh_password) };
+}
+
+async function runDetection(vpsRow, userId, vpsId) {
+  const password = decrypt(vpsRow.ssh_password);
+  const vps = { ...vpsRow, password };
+  const upsertTool = db.prepare(`
+    INSERT INTO vps_detected_tools (user_id, vps_id, tool_name, tool_version, is_active, raw_output, detected_at)
+    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(user_id, vps_id, tool_name) DO UPDATE SET
+      tool_version = excluded.tool_version,
+      is_active    = excluded.is_active,
+      raw_output   = excluded.raw_output,
+      detected_at  = CURRENT_TIMESTAMP
+  `);
+
+  for (const { tool, cmd } of DETECTION_COMMANDS) {
+    try {
+      const out = await runSSH(vps, cmd);
+      const found = !out.includes('NOT_FOUND') && out.trim().length > 0;
+      const version = found ? out.trim().split('\n')[0].slice(0, 200) : null;
+      upsertTool.run(userId, vpsId, tool, version, found ? 1 : 0, out.trim().slice(0, 500));
+    } catch { upsertTool.run(userId, vpsId, tool, null, 0, 'SSH error'); }
+  }
+
+  // Detect projects
+  db.prepare('DELETE FROM vps_detected_projects WHERE user_id = ? AND vps_id = ?').run(userId, vpsId);
+  const insertProject = db.prepare(`
+    INSERT INTO vps_detected_projects (user_id, vps_id, project_name, project_path, project_type, tech_stack, is_running)
+    VALUES (?, ?, ?, ?, ?, ?, 0)
+  `);
+
+  try {
+    const composeFiles = await runSSH(vps, 'find /home /opt /var/www -name "docker-compose.yml" 2>/dev/null | head -20 || echo ""');
+    for (const p of composeFiles.split('\n').filter(l => l && !l.includes('NOT_FOUND'))) {
+      const dir  = p.replace('/docker-compose.yml', '');
+      const name = dir.split('/').pop() || dir;
+      insertProject.run(userId, vpsId, name, dir, 'docker-compose', 'Docker', 0);
+    }
+  } catch {}
+
+  try {
+    const pkgFiles = await runSSH(vps, 'find /var/www -name "package.json" -maxdepth 3 2>/dev/null | head -10 || echo ""');
+    for (const p of pkgFiles.split('\n').filter(l => l && !l.includes('NOT_FOUND'))) {
+      const dir  = p.replace('/package.json', '');
+      const name = dir.split('/').pop() || dir;
+      insertProject.run(userId, vpsId, name, dir, 'nodejs', 'Node.js', 0);
+    }
+  } catch {}
+
+  try {
+    const reqFiles = await runSSH(vps, 'find /var/www -name "requirements.txt" -maxdepth 3 2>/dev/null | head -10 || echo ""');
+    for (const p of reqFiles.split('\n').filter(l => l && !l.includes('NOT_FOUND'))) {
+      const dir  = p.replace('/requirements.txt', '');
+      const name = dir.split('/').pop() || dir;
+      insertProject.run(userId, vpsId, name, dir, 'python', 'Python', 0);
+    }
+  } catch {}
+}
+
+// GET /api/vps/:id/detected-tools
+app.get('/api/vps/:id/detected-tools', (req, res) => {
+  const userId = req.authSession.user.id;
+  const vpsRow = db.prepare('SELECT id FROM vps WHERE user_id = ? AND slug = ? AND deleted_at IS NULL').get(userId, req.params.id);
+  if (!vpsRow) return res.status(404).json({ error: 'VPS not found' });
+  const tools = db.prepare('SELECT * FROM vps_detected_tools WHERE user_id = ? AND vps_id = ? ORDER BY tool_name').all(userId, vpsRow.id);
+  res.json({ tools });
+});
+
+// GET /api/vps/:id/detected-projects
+app.get('/api/vps/:id/detected-projects', (req, res) => {
+  const userId = req.authSession.user.id;
+  const vpsRow = db.prepare('SELECT id FROM vps WHERE user_id = ? AND slug = ? AND deleted_at IS NULL').get(userId, req.params.id);
+  if (!vpsRow) return res.status(404).json({ error: 'VPS not found' });
+  const projects = db.prepare('SELECT * FROM vps_detected_projects WHERE user_id = ? AND vps_id = ? ORDER BY project_name').all(userId, vpsRow.id);
+  res.json({ projects });
+});
+
+// POST /api/vps/:id/detect — trigger full scan
+app.post('/api/vps/:id/detect', async (req, res) => {
+  const userId = req.authSession.user.id;
+  const vpsRow = db.prepare('SELECT * FROM vps WHERE user_id = ? AND slug = ? AND deleted_at IS NULL').get(userId, req.params.id);
+  if (!vpsRow) return res.status(404).json({ error: 'VPS not found' });
+  if (!hasSshAccess(vpsRow)) return res.status(400).json({ error: 'SSH not configured' });
+
+  // Check cache (skip if scanned recently)
+  const last = db.prepare('SELECT detected_at FROM vps_detected_tools WHERE vps_id = ? ORDER BY detected_at DESC LIMIT 1').get(vpsRow.id);
+  const force = req.body?.force === true;
+  if (!force && last) {
+    const age = Date.now() - new Date(last.detected_at).getTime();
+    if (age < SCAN_CACHE_MS) {
+      const tools    = db.prepare('SELECT * FROM vps_detected_tools WHERE user_id = ? AND vps_id = ?').all(userId, vpsRow.id);
+      const projects = db.prepare('SELECT * FROM vps_detected_projects WHERE user_id = ? AND vps_id = ?').all(userId, vpsRow.id);
+      return res.json({ cached: true, tools, projects });
+    }
+  }
+
+  try {
+    await runDetection(vpsRow, userId, vpsRow.id);
+    const tools    = db.prepare('SELECT * FROM vps_detected_tools WHERE user_id = ? AND vps_id = ?').all(userId, vpsRow.id);
+    const projects = db.prepare('SELECT * FROM vps_detected_projects WHERE user_id = ? AND vps_id = ?').all(userId, vpsRow.id);
+    auditLog({ userId, action: 'VPS tool scan', category: 'vps', details: req.params.id, ip: getClientIp(req) });
+    res.json({ cached: false, tools, projects });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PHASE 3 — GITLAB CI/CD INTEGRATION
+// ══════════════════════════════════════════════════════════════════════════════
+
+// POST /api/vps/:id/gitlab/connect
+app.post('/api/vps/:id/gitlab/connect', (req, res) => {
+  const userId = req.authSession.user.id;
+  const vpsRow = db.prepare('SELECT id FROM vps WHERE user_id = ? AND slug = ? AND deleted_at IS NULL').get(userId, req.params.id);
+  if (!vpsRow) return res.status(404).json({ error: 'VPS not found' });
+  const { gitlab_url, project_id, token } = req.body || {};
+  if (!gitlab_url || !project_id || !token) return res.status(400).json({ error: 'gitlab_url, project_id and token are required' });
+  const enc = encrypt(token);
+  db.prepare(`
+    INSERT INTO gitlab_integrations (user_id, vps_id, gitlab_url, project_id, token_encrypted)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT DO NOTHING
+  `).run(userId, vpsRow.id, gitlab_url, project_id, enc);
+  auditLog({ userId, action: 'GitLab connected', category: 'integration', details: project_id, ip: getClientIp(req) });
+  res.json({ ok: true });
+});
+
+// GET /api/vps/:id/gitlab/pipelines
+app.get('/api/vps/:id/gitlab/pipelines', async (req, res) => {
+  const userId = req.authSession.user.id;
+  const vpsRow = db.prepare('SELECT id FROM vps WHERE user_id = ? AND slug = ? AND deleted_at IS NULL').get(userId, req.params.id);
+  if (!vpsRow) return res.status(404).json({ error: 'VPS not found' });
+  const gl = db.prepare('SELECT * FROM gitlab_integrations WHERE user_id = ? AND vps_id = ? AND enabled = 1').get(userId, vpsRow.id);
+  if (!gl) return res.json({ available: false });
+  try {
+    const { default: fetch } = await import('node-fetch');
+    const token = decrypt(gl.token_encrypted);
+    const r = await fetch(`${gl.gitlab_url}/api/v4/projects/${encodeURIComponent(gl.project_id)}/pipelines?per_page=10`, {
+      headers: { 'PRIVATE-TOKEN': token },
+    });
+    if (!r.ok) return res.json({ available: false, error: `GitLab API: ${r.status}` });
+    const pipelines = await r.json();
+    res.json({ available: true, pipelines });
+  } catch (err) { res.json({ available: false, error: err.message }); }
+});
+
+// GET /api/vps/:id/gitlab/pipelines/:pid
+app.get('/api/vps/:id/gitlab/pipelines/:pid', async (req, res) => {
+  const userId = req.authSession.user.id;
+  const vpsRow = db.prepare('SELECT id FROM vps WHERE user_id = ? AND slug = ? AND deleted_at IS NULL').get(userId, req.params.id);
+  if (!vpsRow) return res.status(404).json({ error: 'VPS not found' });
+  const gl = db.prepare('SELECT * FROM gitlab_integrations WHERE user_id = ? AND vps_id = ? AND enabled = 1').get(userId, vpsRow.id);
+  if (!gl) return res.json({ available: false });
+  try {
+    const { default: fetch } = await import('node-fetch');
+    const token = decrypt(gl.token_encrypted);
+    const r = await fetch(`${gl.gitlab_url}/api/v4/projects/${encodeURIComponent(gl.project_id)}/pipelines/${req.params.pid}`, {
+      headers: { 'PRIVATE-TOKEN': token },
+    });
+    if (!r.ok) return res.json({ available: false, error: `GitLab API: ${r.status}` });
+    res.json({ available: true, pipeline: await r.json() });
+  } catch (err) { res.json({ available: false, error: err.message }); }
+});
+
+// POST /api/vps/:id/gitlab/pipelines/:pid/retry
+app.post('/api/vps/:id/gitlab/pipelines/:pid/retry', async (req, res) => {
+  const userId = req.authSession.user.id;
+  const vpsRow = db.prepare('SELECT id FROM vps WHERE user_id = ? AND slug = ? AND deleted_at IS NULL').get(userId, req.params.id);
+  if (!vpsRow) return res.status(404).json({ error: 'VPS not found' });
+  const gl = db.prepare('SELECT * FROM gitlab_integrations WHERE user_id = ? AND vps_id = ? AND enabled = 1').get(userId, vpsRow.id);
+  if (!gl) return res.json({ available: false });
+  try {
+    const { default: fetch } = await import('node-fetch');
+    const token = decrypt(gl.token_encrypted);
+    const r = await fetch(`${gl.gitlab_url}/api/v4/projects/${encodeURIComponent(gl.project_id)}/pipelines/${req.params.pid}/retry`, {
+      method: 'POST',
+      headers: { 'PRIVATE-TOKEN': token },
+    });
+    if (!r.ok) return res.json({ ok: false, error: `GitLab API: ${r.status}` });
+    auditLog({ userId, action: 'GitLab pipeline retry', category: 'integration', details: req.params.pid, ip: getClientIp(req) });
+    res.json({ ok: true, pipeline: await r.json() });
+  } catch (err) { res.json({ ok: false, error: err.message }); }
+});
+
+// GET /api/vps/:id/gitlab/runner-status
+app.get('/api/vps/:id/gitlab/runner-status', async (req, res) => {
+  const userId = req.authSession.user.id;
+  const vpsRow = db.prepare('SELECT id FROM vps WHERE user_id = ? AND slug = ? AND deleted_at IS NULL').get(userId, req.params.id);
+  if (!vpsRow) return res.status(404).json({ error: 'VPS not found' });
+  const tool = db.prepare("SELECT * FROM vps_detected_tools WHERE user_id = ? AND vps_id = ? AND tool_name = 'gitlab-runner'").get(userId, vpsRow.id);
+  if (!tool || !tool.is_active) return res.json({ available: false });
+  const vps = getVpsBySlug(userId, req.params.id);
+  if (!hasSshAccess(vps)) return res.json({ available: false });
+  try {
+    const out = await runSSH(vps, 'systemctl is-active gitlab-runner 2>/dev/null || echo "unknown"');
+    res.json({ available: true, status: out.trim() });
+  } catch { res.json({ available: false }); }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PHASE 3 — KUBERNETES (READ-ONLY via SSH)
+// ══════════════════════════════════════════════════════════════════════════════
+
+// GET /api/vps/:id/k8s/overview
+app.get('/api/vps/:id/k8s/overview', async (req, res) => {
+  const userId = req.authSession.user.id;
+  const vpsRow = db.prepare('SELECT id FROM vps WHERE user_id = ? AND slug = ? AND deleted_at IS NULL').get(userId, req.params.id);
+  if (!vpsRow) return res.status(404).json({ error: 'VPS not found' });
+  const tool = db.prepare("SELECT * FROM vps_detected_tools WHERE user_id = ? AND vps_id = ? AND tool_name IN ('kubectl','k3s','microk8s') AND is_active = 1 LIMIT 1").get(userId, vpsRow.id);
+  if (!tool) return res.json({ available: false });
+  const vps = getVpsBySlug(userId, req.params.id);
+  if (!hasSshAccess(vps)) return res.json({ available: false });
+  try {
+    const [nodes, pods, deploys, svcs] = await Promise.all([
+      runSSH(vps, 'kubectl get nodes --no-headers 2>/dev/null || echo "NOT_FOUND"'),
+      runSSH(vps, 'kubectl get pods -A --no-headers 2>/dev/null | head -30 || echo "NOT_FOUND"'),
+      runSSH(vps, 'kubectl get deployments -A --no-headers 2>/dev/null | head -20 || echo "NOT_FOUND"'),
+      runSSH(vps, 'kubectl get services -A --no-headers 2>/dev/null | head -20 || echo "NOT_FOUND"'),
+    ]);
+    const snap = { nodes_json: nodes, pods_json: pods, deployments_json: deploys, services_json: svcs };
+    db.prepare('INSERT INTO k8s_snapshots (user_id, vps_id, nodes_json, pods_json, deployments_json, services_json) VALUES (?, ?, ?, ?, ?, ?)').run(userId, vpsRow.id, nodes, pods, deploys, svcs);
+    res.json({ available: true, ...snap });
+  } catch (err) { res.json({ available: false, error: err.message }); }
+});
+
+// GET /api/vps/:id/k8s/pods
+app.get('/api/vps/:id/k8s/pods', async (req, res) => {
+  const userId = req.authSession.user.id;
+  const vps = getVpsBySlug(userId, req.params.id);
+  if (!vps) return res.status(404).json({ error: 'VPS not found' });
+  const tool = db.prepare("SELECT * FROM vps_detected_tools WHERE user_id = ? AND vps_id = ? AND tool_name IN ('kubectl','k3s','microk8s') AND is_active = 1 LIMIT 1").get(userId, vps.id);
+  if (!tool) return res.json({ available: false });
+  if (!hasSshAccess(vps)) return res.json({ available: false });
+  try {
+    const out = await runSSH(vps, 'kubectl get pods -A -o json 2>/dev/null || echo "{}"');
+    res.json({ available: true, raw: out });
+  } catch (err) { res.json({ available: false, error: err.message }); }
+});
+
+// GET /api/vps/:id/k8s/deployments
+app.get('/api/vps/:id/k8s/deployments', async (req, res) => {
+  const userId = req.authSession.user.id;
+  const vps = getVpsBySlug(userId, req.params.id);
+  if (!vps) return res.status(404).json({ error: 'VPS not found' });
+  const tool = db.prepare("SELECT * FROM vps_detected_tools WHERE user_id = ? AND vps_id = ? AND tool_name IN ('kubectl','k3s','microk8s') AND is_active = 1 LIMIT 1").get(userId, vps.id);
+  if (!tool) return res.json({ available: false });
+  if (!hasSshAccess(vps)) return res.json({ available: false });
+  try {
+    const out = await runSSH(vps, 'kubectl get deployments -A -o json 2>/dev/null || echo "{}"');
+    res.json({ available: true, raw: out });
+  } catch (err) { res.json({ available: false, error: err.message }); }
+});
+
+// GET /api/vps/:id/k8s/services
+app.get('/api/vps/:id/k8s/services', async (req, res) => {
+  const userId = req.authSession.user.id;
+  const vps = getVpsBySlug(userId, req.params.id);
+  if (!vps) return res.status(404).json({ error: 'VPS not found' });
+  const tool = db.prepare("SELECT * FROM vps_detected_tools WHERE user_id = ? AND vps_id = ? AND tool_name IN ('kubectl','k3s','microk8s') AND is_active = 1 LIMIT 1").get(userId, vps.id);
+  if (!tool) return res.json({ available: false });
+  if (!hasSshAccess(vps)) return res.json({ available: false });
+  try {
+    const out = await runSSH(vps, 'kubectl get services -A -o json 2>/dev/null || echo "{}"');
+    res.json({ available: true, raw: out });
+  } catch (err) { res.json({ available: false, error: err.message }); }
+});
+
+// GET /api/vps/:id/k8s/logs/:namespace/:pod
+app.get('/api/vps/:id/k8s/logs/:namespace/:pod', async (req, res) => {
+  const userId = req.authSession.user.id;
+  const vps = getVpsBySlug(userId, req.params.id);
+  if (!vps) return res.status(404).json({ error: 'VPS not found' });
+  if (!hasSshAccess(vps)) return res.json({ available: false });
+  try {
+    const out = await runSSH(vps, `kubectl logs -n ${req.params.namespace} ${req.params.pod} --tail=100 2>/dev/null || echo ""`);
+    res.json({ available: true, logs: out });
+  } catch (err) { res.json({ available: false, error: err.message }); }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PHASE 3 — ANSIBLE (READ-ONLY scan)
+// ══════════════════════════════════════════════════════════════════════════════
+
+// GET /api/vps/:id/ansible/playbooks
+app.get('/api/vps/:id/ansible/playbooks', (req, res) => {
+  const userId = req.authSession.user.id;
+  const vpsRow = db.prepare('SELECT id FROM vps WHERE user_id = ? AND slug = ? AND deleted_at IS NULL').get(userId, req.params.id);
+  if (!vpsRow) return res.status(404).json({ error: 'VPS not found' });
+  const tool = db.prepare("SELECT * FROM vps_detected_tools WHERE user_id = ? AND vps_id = ? AND tool_name = 'ansible' AND is_active = 1").get(userId, vpsRow.id);
+  if (!tool) return res.json({ available: false });
+  const playbooks = db.prepare('SELECT * FROM ansible_playbooks WHERE user_id = ? AND vps_id = ? ORDER BY playbook_name').all(userId, vpsRow.id);
+  res.json({ available: true, playbooks });
+});
+
+// POST /api/vps/:id/ansible/playbooks/scan
+app.post('/api/vps/:id/ansible/playbooks/scan', async (req, res) => {
+  const userId = req.authSession.user.id;
+  const vpsRow = db.prepare('SELECT id FROM vps WHERE user_id = ? AND slug = ? AND deleted_at IS NULL').get(userId, req.params.id);
+  if (!vpsRow) return res.status(404).json({ error: 'VPS not found' });
+  const vps = getVpsBySlug(userId, req.params.id);
+  if (!hasSshAccess(vps)) return res.status(400).json({ error: 'SSH not configured' });
+  try {
+    const out = await runSSH(vps, 'find ~/playbooks /etc/ansible /opt/ansible -name "*.yml" -o -name "*.yaml" 2>/dev/null | head -30 || echo ""');
+    db.prepare('DELETE FROM ansible_playbooks WHERE user_id = ? AND vps_id = ?').run(userId, vpsRow.id);
+    const ins = db.prepare('INSERT INTO ansible_playbooks (user_id, vps_id, playbook_path, playbook_name) VALUES (?, ?, ?, ?)');
+    for (const p of out.split('\n').filter(l => l.trim())) {
+      const name = p.split('/').pop() || p;
+      ins.run(userId, vpsRow.id, p.trim(), name);
+    }
+    const playbooks = db.prepare('SELECT * FROM ansible_playbooks WHERE user_id = ? AND vps_id = ?').all(userId, vpsRow.id);
+    auditLog({ userId, action: 'Ansible scan', category: 'integration', details: req.params.id, ip: getClientIp(req) });
+    res.json({ available: true, playbooks });
+  } catch (err) { res.json({ available: false, error: err.message }); }
+});
+
+// GET /api/vps/:id/ansible/logs
+app.get('/api/vps/:id/ansible/logs', async (req, res) => {
+  const userId = req.authSession.user.id;
+  const vps = getVpsBySlug(userId, req.params.id);
+  if (!vps) return res.status(404).json({ error: 'VPS not found' });
+  if (!hasSshAccess(vps)) return res.json({ available: false });
+  try {
+    const out = await runSSH(vps, 'tail -50 /var/log/ansible.log 2>/dev/null || tail -50 ~/.ansible/log 2>/dev/null || echo "No logs found"');
+    res.json({ available: true, logs: out });
+  } catch (err) { res.json({ available: false, error: err.message }); }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PHASE 3 — TERRAFORM (READ-ONLY)
+// ══════════════════════════════════════════════════════════════════════════════
+
+// GET /api/vps/:id/terraform/workspaces
+app.get('/api/vps/:id/terraform/workspaces', (req, res) => {
+  const userId = req.authSession.user.id;
+  const vpsRow = db.prepare('SELECT id FROM vps WHERE user_id = ? AND slug = ? AND deleted_at IS NULL').get(userId, req.params.id);
+  if (!vpsRow) return res.status(404).json({ error: 'VPS not found' });
+  const tool = db.prepare("SELECT * FROM vps_detected_tools WHERE user_id = ? AND vps_id = ? AND tool_name = 'terraform' AND is_active = 1").get(userId, vpsRow.id);
+  if (!tool) return res.json({ available: false });
+  const workspaces = db.prepare('SELECT * FROM terraform_workspaces WHERE user_id = ? AND vps_id = ? ORDER BY workspace_name').all(userId, vpsRow.id);
+  res.json({ available: true, workspaces });
+});
+
+// POST /api/vps/:id/terraform/workspaces/scan
+app.post('/api/vps/:id/terraform/workspaces/scan', async (req, res) => {
+  const userId = req.authSession.user.id;
+  const vpsRow = db.prepare('SELECT id FROM vps WHERE user_id = ? AND slug = ? AND deleted_at IS NULL').get(userId, req.params.id);
+  if (!vpsRow) return res.status(404).json({ error: 'VPS not found' });
+  const vps = getVpsBySlug(userId, req.params.id);
+  if (!hasSshAccess(vps)) return res.status(400).json({ error: 'SSH not configured' });
+  try {
+    const out = await runSSH(vps, 'find ~ /opt /var/www -name "*.tf" -maxdepth 5 2>/dev/null | xargs -I{} dirname {} 2>/dev/null | sort -u | head -10 || echo ""');
+    db.prepare('DELETE FROM terraform_workspaces WHERE user_id = ? AND vps_id = ?').run(userId, vpsRow.id);
+    const ins = db.prepare('INSERT INTO terraform_workspaces (user_id, vps_id, workspace_path, workspace_name) VALUES (?, ?, ?, ?)');
+    for (const p of out.split('\n').filter(l => l.trim())) {
+      const name = p.split('/').pop() || p;
+      ins.run(userId, vpsRow.id, p.trim(), name);
+    }
+    const workspaces = db.prepare('SELECT * FROM terraform_workspaces WHERE user_id = ? AND vps_id = ?').all(userId, vpsRow.id);
+    res.json({ available: true, workspaces });
+  } catch (err) { res.json({ available: false, error: err.message }); }
+});
+
+// GET /api/vps/:id/terraform/state/:wsid
+app.get('/api/vps/:id/terraform/state/:wsid', async (req, res) => {
+  const userId = req.authSession.user.id;
+  const vpsRow = db.prepare('SELECT id FROM vps WHERE user_id = ? AND slug = ? AND deleted_at IS NULL').get(userId, req.params.id);
+  if (!vpsRow) return res.status(404).json({ error: 'VPS not found' });
+  const ws = db.prepare('SELECT * FROM terraform_workspaces WHERE id = ? AND user_id = ? AND vps_id = ?').get(req.params.wsid, userId, vpsRow.id);
+  if (!ws) return res.status(404).json({ error: 'Workspace not found' });
+  const vps = getVpsBySlug(userId, req.params.id);
+  if (!hasSshAccess(vps)) return res.json({ available: false });
+  try {
+    const out = await runSSH(vps, `cd ${ws.workspace_path} && terraform state list 2>/dev/null || echo ""`);
+    res.json({ available: true, resources: out.split('\n').filter(Boolean) });
+  } catch (err) { res.json({ available: false, error: err.message }); }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PHASE 3 — PROMETHEUS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// POST /api/vps/:id/prometheus/connect
+app.post('/api/vps/:id/prometheus/connect', (req, res) => {
+  const userId = req.authSession.user.id;
+  const vpsRow = db.prepare('SELECT id FROM vps WHERE user_id = ? AND slug = ? AND deleted_at IS NULL').get(userId, req.params.id);
+  if (!vpsRow) return res.status(404).json({ error: 'VPS not found' });
+  const { prometheus_url = 'http://localhost:9090' } = req.body || {};
+  db.prepare(`
+    INSERT INTO prometheus_integrations (user_id, vps_id, prometheus_url)
+    VALUES (?, ?, ?)
+    ON CONFLICT DO NOTHING
+  `).run(userId, vpsRow.id, prometheus_url);
+  res.json({ ok: true });
+});
+
+// GET /api/vps/:id/prometheus/targets
+app.get('/api/vps/:id/prometheus/targets', async (req, res) => {
+  const userId = req.authSession.user.id;
+  const vpsRow = db.prepare('SELECT id, host FROM vps WHERE user_id = ? AND slug = ? AND deleted_at IS NULL').get(userId, req.params.id);
+  if (!vpsRow) return res.status(404).json({ error: 'VPS not found' });
+  const pi = db.prepare('SELECT * FROM prometheus_integrations WHERE user_id = ? AND vps_id = ? AND enabled = 1').get(userId, vpsRow.id);
+  const url = pi?.prometheus_url || `http://${vpsRow.host}:9090`;
+  try {
+    const { default: fetch } = await import('node-fetch');
+    const r = await fetch(`${url}/api/v1/targets`, { signal: AbortSignal.timeout(5000) });
+    if (!r.ok) return res.json({ available: false });
+    const data = await r.json();
+    db.prepare('UPDATE prometheus_integrations SET is_reachable = 1, last_checked_at = CURRENT_TIMESTAMP WHERE user_id = ? AND vps_id = ?').run(userId, vpsRow.id);
+    res.json({ available: true, targets: data.data });
+  } catch { res.json({ available: false }); }
+});
+
+// GET /api/vps/:id/prometheus/alerts
+app.get('/api/vps/:id/prometheus/alerts', async (req, res) => {
+  const userId = req.authSession.user.id;
+  const vpsRow = db.prepare('SELECT id, host FROM vps WHERE user_id = ? AND slug = ? AND deleted_at IS NULL').get(userId, req.params.id);
+  if (!vpsRow) return res.status(404).json({ error: 'VPS not found' });
+  const pi = db.prepare('SELECT * FROM prometheus_integrations WHERE user_id = ? AND vps_id = ? AND enabled = 1').get(userId, vpsRow.id);
+  const url = pi?.prometheus_url || `http://${vpsRow.host}:9090`;
+  try {
+    const { default: fetch } = await import('node-fetch');
+    const r = await fetch(`${url}/api/v1/alerts`, { signal: AbortSignal.timeout(5000) });
+    if (!r.ok) return res.json({ available: false });
+    const data = await r.json();
+    res.json({ available: true, alerts: data.data?.alerts || [] });
+  } catch { res.json({ available: false }); }
+});
+
+// GET /api/vps/:id/prometheus/query
+app.get('/api/vps/:id/prometheus/query', async (req, res) => {
+  const userId = req.authSession.user.id;
+  const vpsRow = db.prepare('SELECT id, host FROM vps WHERE user_id = ? AND slug = ? AND deleted_at IS NULL').get(userId, req.params.id);
+  if (!vpsRow) return res.status(404).json({ error: 'VPS not found' });
+  const { q } = req.query;
+  if (!q) return res.status(400).json({ error: 'q is required' });
+  const pi = db.prepare('SELECT * FROM prometheus_integrations WHERE user_id = ? AND vps_id = ? AND enabled = 1').get(userId, vpsRow.id);
+  const url = pi?.prometheus_url || `http://${vpsRow.host}:9090`;
+  try {
+    const { default: fetch } = await import('node-fetch');
+    const r = await fetch(`${url}/api/v1/query?query=${encodeURIComponent(q)}`, { signal: AbortSignal.timeout(5000) });
+    if (!r.ok) return res.json({ available: false });
+    const data = await r.json();
+    res.json({ available: true, result: data.data });
+  } catch { res.json({ available: false }); }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PHASE 3 — JENKINS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// POST /api/vps/:id/jenkins/connect
+app.post('/api/vps/:id/jenkins/connect', (req, res) => {
+  const userId = req.authSession.user.id;
+  const vpsRow = db.prepare('SELECT id FROM vps WHERE user_id = ? AND slug = ? AND deleted_at IS NULL').get(userId, req.params.id);
+  if (!vpsRow) return res.status(404).json({ error: 'VPS not found' });
+  const { jenkins_url, username, token } = req.body || {};
+  if (!jenkins_url || !username || !token) return res.status(400).json({ error: 'jenkins_url, username and token are required' });
+  db.prepare(`
+    INSERT INTO jenkins_integrations (user_id, vps_id, jenkins_url, username, token_encrypted)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT DO NOTHING
+  `).run(userId, vpsRow.id, jenkins_url, username, encrypt(token));
+  auditLog({ userId, action: 'Jenkins connected', category: 'integration', details: jenkins_url, ip: getClientIp(req) });
+  res.json({ ok: true });
+});
+
+// GET /api/vps/:id/jenkins/jobs
+app.get('/api/vps/:id/jenkins/jobs', async (req, res) => {
+  const userId = req.authSession.user.id;
+  const vpsRow = db.prepare('SELECT id FROM vps WHERE user_id = ? AND slug = ? AND deleted_at IS NULL').get(userId, req.params.id);
+  if (!vpsRow) return res.status(404).json({ error: 'VPS not found' });
+  const ji = db.prepare('SELECT * FROM jenkins_integrations WHERE user_id = ? AND vps_id = ? AND enabled = 1').get(userId, vpsRow.id);
+  if (!ji) return res.json({ available: false });
+  try {
+    const { default: fetch } = await import('node-fetch');
+    const token = decrypt(ji.token_encrypted);
+    const auth = 'Basic ' + Buffer.from(`${ji.username}:${token}`).toString('base64');
+    const r = await fetch(`${ji.jenkins_url}/api/json?tree=jobs[name,color,lastBuild[number,result,timestamp,duration]]`, {
+      headers: { Authorization: auth },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!r.ok) return res.json({ available: false, error: `Jenkins API: ${r.status}` });
+    const data = await r.json();
+    res.json({ available: true, jobs: data.jobs || [] });
+  } catch (err) { res.json({ available: false, error: err.message }); }
+});
+
+// GET /api/vps/:id/jenkins/jobs/:name
+app.get('/api/vps/:id/jenkins/jobs/:name', async (req, res) => {
+  const userId = req.authSession.user.id;
+  const vpsRow = db.prepare('SELECT id FROM vps WHERE user_id = ? AND slug = ? AND deleted_at IS NULL').get(userId, req.params.id);
+  if (!vpsRow) return res.status(404).json({ error: 'VPS not found' });
+  const ji = db.prepare('SELECT * FROM jenkins_integrations WHERE user_id = ? AND vps_id = ? AND enabled = 1').get(userId, vpsRow.id);
+  if (!ji) return res.json({ available: false });
+  try {
+    const { default: fetch } = await import('node-fetch');
+    const token = decrypt(ji.token_encrypted);
+    const auth = 'Basic ' + Buffer.from(`${ji.username}:${token}`).toString('base64');
+    const r = await fetch(`${ji.jenkins_url}/job/${encodeURIComponent(req.params.name)}/api/json?tree=builds[number,result,timestamp,duration,url]{0,10}`, {
+      headers: { Authorization: auth },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!r.ok) return res.json({ available: false, error: `Jenkins API: ${r.status}` });
+    res.json({ available: true, job: await r.json() });
+  } catch (err) { res.json({ available: false, error: err.message }); }
+});
+
+// POST /api/vps/:id/jenkins/jobs/:name/build
+app.post('/api/vps/:id/jenkins/jobs/:name/build', async (req, res) => {
+  const userId = req.authSession.user.id;
+  const vpsRow = db.prepare('SELECT id FROM vps WHERE user_id = ? AND slug = ? AND deleted_at IS NULL').get(userId, req.params.id);
+  if (!vpsRow) return res.status(404).json({ error: 'VPS not found' });
+  const ji = db.prepare('SELECT * FROM jenkins_integrations WHERE user_id = ? AND vps_id = ? AND enabled = 1').get(userId, vpsRow.id);
+  if (!ji) return res.json({ available: false });
+  try {
+    const { default: fetch } = await import('node-fetch');
+    const token = decrypt(ji.token_encrypted);
+    const auth = 'Basic ' + Buffer.from(`${ji.username}:${token}`).toString('base64');
+    const r = await fetch(`${ji.jenkins_url}/job/${encodeURIComponent(req.params.name)}/build`, {
+      method: 'POST',
+      headers: { Authorization: auth },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (r.status === 201 || r.status === 200) {
+      auditLog({ userId, action: 'Jenkins build triggered', category: 'integration', details: req.params.name, ip: getClientIp(req) });
+      return res.json({ ok: true });
+    }
+    res.json({ ok: false, error: `Jenkins API: ${r.status}` });
+  } catch (err) { res.json({ ok: false, error: err.message }); }
+});
+
+// ── Phase 5 — Proxy RAG ───────────────────────────────────────────────────────
+app.post('/api/rag/ask', async (req, res) => {
+  try {
+    const { default: fetch } = await import('node-fetch');
+    const response = await fetch(`${process.env.RAG_URL || 'http://rag:3002'}/rag/ask`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': req.headers.authorization || '',
+        'Cookie': req.headers.cookie || '',
+      },
+      body: JSON.stringify(req.body),
+    });
+    const data = await response.json();
+    res.json(data);
+  } catch {
+    res.json({
+      answer: "L'assistant DevOps est temporairement indisponible. Vérifie que le service RAG est démarré.",
+      commands: [], steps: [], off_topic: false, error: true,
+    });
+  }
 });
 
 // ══════════════════════════════════════════════════════════════════════════════

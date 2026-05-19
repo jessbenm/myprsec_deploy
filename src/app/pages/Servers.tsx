@@ -166,10 +166,9 @@ export default function Servers() {
 
     .srv-root {
       font-family: 'Rajdhani', sans-serif;
-      min-height: 100vh;
       color: ${isDark ? '#e2e8f0' : '#0f172a'};
       background: ${isDark ? '#050d1a' : 'transparent'};
-      position: relative; overflow: hidden; padding: 28px;
+      position: relative; overflow: hidden; padding: 24px;
     }
     .srv-root::before {
       content: ''; position: absolute; inset: 0;

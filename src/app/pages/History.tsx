@@ -81,12 +81,11 @@ const CSS = `
 
   .hist-root {
     font-family: 'Inter', sans-serif;
-    min-height: 100vh;
     background: var(--hist-bg);
     color: var(--hist-text);
     position: relative;
     overflow: hidden;
-    padding: 20px 24px;
+    padding: 24px;
   }
 
   .hist-search-wrap {

@@ -159,7 +159,7 @@ export default function Pipeline() {
   const score = stats?.successRate || 0;
 
   return (
-    <div className="flex flex-col gap-3 text-sm">
+    <div className="flex flex-col gap-3 text-sm p-6">
 
       {/* Status bar */}
       <div className="flex items-center justify-between rounded-xl px-4 py-2.5"
