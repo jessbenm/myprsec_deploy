@@ -977,7 +977,7 @@ async function getHostRuntimeSnapshot(vps) {
 
 async function collectRuntimeForVps(vps) {
   const docker = await getDockerRuntimeSnapshot(vps);
-  if (docker.accessible) {
+  if (docker.accessible && docker.stats.length > 0) {
     const containers = docker.stats.map(c => ({
       name: c.name,
       cpu: parseCpu(c.cpu),
@@ -1619,41 +1619,38 @@ app.get('/api/metrics/:id', async (req, res) => {
   if (!hasSshAccess(vps)) return res.status(400).json({ error: 'SSH is not configured for this VPS yet' });
 
   try {
-    const docker = await getDockerRuntimeSnapshot(vps);
-    if (docker.accessible) {
-      const ps = docker.ps;
-      const containers = docker.stats.map(c => ({
-        name: c.name,
-        cpu: c.cpu,
-        mem: c.mem,
-        memPerc: c.memPerc,
-        status: ps.find(p => p.name === c.name)?.status || 'unknown',
-      }));
+    const runtime = await collectRuntimeForVps(vps);
+    if (runtime.mode === 'docker') {
       return res.json({
         vps: { id: vps.slug, name: vps.name, host: vps.host },
         mode: 'docker',
-        containers,
-        ps,
+        containers: runtime.containers.map(c => ({
+          name: c.name,
+          cpu: `${c.cpu.toFixed(1)}%`,
+          mem: `${c.mem.toFixed(0)}MiB`,
+          memPerc: `${c.memPerc.toFixed(1)}%`,
+          status: runtime.ps.find(p => p.name === c.name)?.status || 'unknown',
+        })),
+        ps: runtime.ps,
         timestamp: new Date().toISOString(),
       });
     }
 
-    const host = await getHostRuntimeSnapshot(vps);
-    if (!host) {
+    if (runtime.mode === 'host') {
       return res.json({
         vps: { id: vps.slug, name: vps.name, host: vps.host },
-        mode: 'none',
-        containers: [],
-        ps: [],
+        mode: 'host',
+        containers: [{ ...runtime.containers[0], status: runtime.ps[0]?.status || 'Up (host)' }],
+        ps: runtime.ps,
         timestamp: new Date().toISOString(),
       });
     }
 
     return res.json({
       vps: { id: vps.slug, name: vps.name, host: vps.host },
-      mode: 'host',
-      containers: [host.container],
-      ps: [{ name: host.container.name, status: host.container.status }],
+      mode: 'none',
+      containers: [],
+      ps: [],
       timestamp: new Date().toISOString(),
     });
   } catch (err) {
@@ -1862,9 +1859,9 @@ app.get('/api/alerts/:id', async (req, res) => {
   ];
 
   try {
-    const docker = await getDockerRuntimeSnapshot(vps);
-    const containers = docker.stats;
-    const ps = docker.ps;
+    const runtime = await collectRuntimeForVps(vps);
+    const containers = runtime.containers;
+    const ps = runtime.ps;
 
     const alerts = [];
     const now    = new Date().toISOString();
@@ -1898,7 +1895,7 @@ app.get('/api/alerts/:id', async (req, res) => {
       });
     }
 
-    if (!docker.accessible) {
+    if (runtime.mode !== 'docker') {
       const host = await getHostRuntimeSnapshot(vps);
       if (host) {
         const cpu = parseCpu(host.container.cpu);
