@@ -23,7 +23,9 @@ interface RequestPoint  { time: string; count: number; }
 interface MemPoint      { time: string; v: number; }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-function parseCpu(cpu: string): number { return parseFloat(cpu.replace('%', '')) || 0; }
+function parseCpu(cpu: string | number | null | undefined): number {
+  return parseFloat(String(cpu ?? '').replace('%', '')) || 0;
+}
 function parseMem(mem: string | undefined | null): number {
   const text = String(mem || '');
   const m = text.match(/([\d.]+)\s*(MiB|GiB|MB|GB)/i);

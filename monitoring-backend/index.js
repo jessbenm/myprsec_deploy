@@ -876,10 +876,15 @@ function getEmailError(email) {
   return null;
 }
 
-function parseCpu(s) { return parseFloat(s) || 0; }
+function parseCpu(s) {
+  if (typeof s === 'number') return Number.isFinite(s) ? s : 0;
+  return parseFloat(String(s || '').replace('%', '')) || 0;
+}
 
 function parseMem(s) {
-  const m = s.match(/([\d.]+)\s*(MiB|GiB|MB|GB)/i);
+  if (typeof s === 'number') return Number.isFinite(s) ? s : 0;
+  const text = String(s || '');
+  const m = text.match(/([\d.]+)\s*(MiB|GiB|MB|GB)/i);
   if (!m) return 0;
   return parseFloat(m[1]) * (/gib|gb/i.test(m[2]) ? 1024 : 1);
 }
@@ -961,9 +966,9 @@ async function getHostRuntimeSnapshot(vps) {
   return {
     container: {
       name: 'host-system',
-      cpu: `${cpuPerc.toFixed(1)}%`,
-      mem: `${usedMem.toFixed(0)}MiB / ${totalMem.toFixed(0)}MiB`,
-      memPerc: `${memPerc.toFixed(1)}%`,
+      cpu: cpuPerc,
+      mem: usedMem,
+      memPerc: memPerc,
       status: 'Up (host)',
     },
     snapshot: {
@@ -977,14 +982,17 @@ async function getHostRuntimeSnapshot(vps) {
 
 async function collectRuntimeForVps(vps) {
   const docker = await getDockerRuntimeSnapshot(vps);
-  if (docker.accessible) {
-    // Use the raw docker outputs (strings) for container fields so frontend parsing stays consistent
-    const containers = docker.stats.map(c => ({ name: c.name, cpu: c.cpu, mem: c.mem, memPerc: c.memPerc }));
+  if (docker.accessible && docker.stats.length > 0) {
+    const containers = docker.stats.map(c => ({
+      name: c.name,
+      cpu: parseCpu(c.cpu),
+      mem: parseMem(c.mem),
+      memPerc: parseCpu(c.memPerc),
+    }));
     const running = docker.ps.filter(p => p.status.includes('Up')).length;
     const total = docker.ps.length;
-    // Compute numeric summaries by parsing the string values
-    const totalCpu = containers.reduce((s, c) => s + parseCpu(c.cpu), 0) / Math.max(1, containers.length);
-    const totalMem = containers.reduce((s, c) => s + parseMem(c.mem), 0);
+    const totalCpu = containers.reduce((s, c) => s + c.cpu, 0) / Math.max(1, containers.length);
+    const totalMem = containers.reduce((s, c) => s + c.mem, 0);
     return {
       mode: 'docker',
       containers,
@@ -1005,7 +1013,6 @@ async function collectRuntimeForVps(vps) {
 
   return {
     mode: 'host',
-    // Keep host container fields as strings (same shape as docker.stats entries)
     containers: [{ name: host.container.name, cpu: host.container.cpu, mem: host.container.mem, memPerc: host.container.memPerc }],
     ps: [{ name: host.container.name, status: host.container.status }],
     summary: host.snapshot,
@@ -1619,9 +1626,9 @@ app.get('/api/metrics/:id', async (req, res) => {
         mode: 'docker',
         containers: runtime.containers.map(c => ({
           name: c.name,
-          cpu: `${c.cpu.toFixed(1)}%`,
-          mem: `${c.mem.toFixed(0)}MiB`,
-          memPerc: `${c.memPerc.toFixed(1)}%`,
+          cpu: `${Number(c.cpu || 0).toFixed(1)}%`,
+          mem: `${Number(c.mem || 0).toFixed(0)}MiB`,
+          memPerc: `${Number(c.memPerc || 0).toFixed(1)}%`,
           status: runtime.ps.find(p => p.name === c.name)?.status || 'unknown',
         })),
         ps: runtime.ps,
@@ -1633,7 +1640,13 @@ app.get('/api/metrics/:id', async (req, res) => {
       return res.json({
         vps: { id: vps.slug, name: vps.name, host: vps.host },
         mode: 'host',
-        containers: [{ ...runtime.containers[0], status: runtime.ps[0]?.status || 'Up (host)' }],
+        containers: [{
+          ...runtime.containers[0],
+          cpu: `${Number(runtime.containers[0]?.cpu || 0).toFixed(1)}%`,
+          mem: `${Number(runtime.containers[0]?.mem || 0).toFixed(0)}MiB`,
+          memPerc: `${Number(runtime.containers[0]?.memPerc || 0).toFixed(1)}%`,
+          status: runtime.ps[0]?.status || 'Up (host)',
+        }],
         ps: runtime.ps,
         timestamp: new Date().toISOString(),
       });
