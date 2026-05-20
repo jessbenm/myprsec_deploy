@@ -978,16 +978,13 @@ async function getHostRuntimeSnapshot(vps) {
 async function collectRuntimeForVps(vps) {
   const docker = await getDockerRuntimeSnapshot(vps);
   if (docker.accessible && docker.stats.length > 0) {
-    const containers = docker.stats.map(c => ({
-      name: c.name,
-      cpu: parseCpu(c.cpu),
-      mem: parseMem(c.mem),
-      memPerc: parseCpu(c.memPerc),
-    }));
+    // Use the raw docker outputs (strings) for container fields so frontend parsing stays consistent
+    const containers = docker.stats.map(c => ({ name: c.name, cpu: c.cpu, mem: c.mem, memPerc: c.memPerc }));
     const running = docker.ps.filter(p => p.status.includes('Up')).length;
     const total = docker.ps.length;
-    const totalCpu = containers.reduce((s, c) => s + c.cpu, 0) / Math.max(1, containers.length);
-    const totalMem = containers.reduce((s, c) => s + c.mem, 0);
+    // Compute numeric summaries by parsing the string values
+    const totalCpu = containers.reduce((s, c) => s + parseCpu(c.cpu), 0) / Math.max(1, containers.length);
+    const totalMem = containers.reduce((s, c) => s + parseMem(c.mem), 0);
     return {
       mode: 'docker',
       containers,
@@ -1008,12 +1005,8 @@ async function collectRuntimeForVps(vps) {
 
   return {
     mode: 'host',
-    containers: [{
-      name: host.container.name,
-      cpu: parseCpu(host.container.cpu),
-      mem: parseMem(host.container.mem),
-      memPerc: parseCpu(host.container.memPerc),
-    }],
+    // Keep host container fields as strings (same shape as docker.stats entries)
+    containers: [{ name: host.container.name, cpu: host.container.cpu, mem: host.container.mem, memPerc: host.container.memPerc }],
     ps: [{ name: host.container.name, status: host.container.status }],
     summary: host.snapshot,
   };
