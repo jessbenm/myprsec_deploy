@@ -24,8 +24,9 @@ interface MemPoint      { time: string; v: number; }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function parseCpu(cpu: string): number { return parseFloat(cpu.replace('%', '')) || 0; }
-function parseMem(mem: string): number {
-  const m = mem.match(/([\d.]+)\s*(MiB|GiB|MB|GB)/i);
+function parseMem(mem: string | undefined | null): number {
+  const text = String(mem || '');
+  const m = text.match(/([\d.]+)\s*(MiB|GiB|MB|GB)/i);
   if (!m) return 0;
   return /gib|gb/i.test(m[2]) ? parseFloat(m[1]) * 1024 : parseFloat(m[1]);
 }
@@ -244,7 +245,7 @@ export default function Monitoring() {
   }, [autoRefresh, environment, fetchCharts]);
 
   // ── Derived KPI values ───────────────────────────────────────────────────────
-  const totalCpu     = metrics ? metrics.containers.reduce((s,c) => s + parseCpu(c.cpu), 0) / metrics.containers.length : 0;
+  const totalCpu     = metrics ? metrics.containers.reduce((s,c) => s + parseCpu(c.cpu), 0) / Math.max(1, metrics.containers.length) : 0;
   const totalMemMB   = metrics ? metrics.containers.reduce((s,c) => s + parseMem(c.mem), 0) : 0;
   const runningCount = metrics ? metrics.ps.filter(p => p.status.includes('Up')).length : 0;
   const totalCount   = metrics ? metrics.ps.length : 0;

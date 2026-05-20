@@ -892,6 +892,133 @@ function detectLogLevel(msg) {
   return 'info';
 }
 
+function splitLines(raw) {
+  return String(raw || '').replace(/\r/g, '').split('\n').map(s => s.trim()).filter(Boolean);
+}
+
+function looksLikeMissingCommand(raw) {
+  const out = String(raw || '').toLowerCase();
+  return out.includes('not_found') || out.includes('command not found') || out.includes('no such file or directory');
+}
+
+function looksLikeDockerUnavailable(raw) {
+  const out = String(raw || '').toLowerCase();
+  return looksLikeMissingCommand(out)
+    || out.includes('cannot connect to the docker daemon')
+    || out.includes('is the docker daemon running')
+    || out.includes('permission denied while trying to connect')
+    || out.includes('got permission denied while trying to connect');
+}
+
+function parseDockerStatsOutput(raw) {
+  return splitLines(raw).map(line => {
+    const parts = line.split('|').map(s => s.trim());
+    if (parts.length < 4 || !parts[0]) return null;
+    const [name, cpu, mem, memPerc] = parts;
+    return { name, cpu, mem, memPerc };
+  }).filter(Boolean);
+}
+
+function parseDockerPsOutput(raw) {
+  return splitLines(raw).map(line => {
+    const idx = line.indexOf('|');
+    if (idx <= 0) return null;
+    return { name: line.slice(0, idx).trim(), status: line.slice(idx + 1).trim() };
+  }).filter(Boolean);
+}
+
+async function getDockerRuntimeSnapshot(vps) {
+  const [statsRaw, psRaw] = await Promise.all([
+    runSSH(vps, "docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}' 2>&1"),
+    runSSH(vps, "docker ps --format '{{.Names}}|{{.Status}}' 2>&1"),
+  ]);
+
+  const stats = parseDockerStatsOutput(statsRaw);
+  const ps = parseDockerPsOutput(psRaw);
+  const accessible = !looksLikeDockerUnavailable(statsRaw) && !looksLikeDockerUnavailable(psRaw);
+  return { stats, ps, accessible, statsRaw, psRaw };
+}
+
+async function getHostRuntimeSnapshot(vps) {
+  const [loadRaw, coresRaw, memRaw] = await Promise.all([
+    runSSH(vps, "cat /proc/loadavg 2>/dev/null | awk '{print $1}' || uptime 2>/dev/null | awk -F'load average:' '{print $2}' | cut -d',' -f1 || echo 0"),
+    runSSH(vps, 'nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1'),
+    runSSH(vps, "free -m 2>/dev/null | awk '/^Mem:/ {print $2\"|\"$3}' || echo '0|0'"),
+  ]);
+
+  const memParts = String(memRaw || '').trim().split('|');
+  const totalMem = Math.max(0, parseFloat(memParts[0]) || 0);
+  const usedMem = Math.max(0, parseFloat(memParts[1]) || 0);
+  const cores = Math.max(1, parseFloat(String(coresRaw || '').trim()) || 1);
+  const load = Math.max(0, parseFloat(String(loadRaw || '').trim()) || 0);
+  const cpuPerc = Math.max(0, Math.min(100, (load / cores) * 100));
+  const memPerc = totalMem > 0 ? (usedMem / totalMem) * 100 : 0;
+
+  if (!Number.isFinite(cpuPerc) || !Number.isFinite(memPerc)) {
+    return null;
+  }
+
+  return {
+    container: {
+      name: 'host-system',
+      cpu: `${cpuPerc.toFixed(1)}%`,
+      mem: `${usedMem.toFixed(0)}MiB / ${totalMem.toFixed(0)}MiB`,
+      memPerc: `${memPerc.toFixed(1)}%`,
+      status: 'Up (host)',
+    },
+    snapshot: {
+      totalCpu: cpuPerc,
+      totalMem: usedMem,
+      running: 1,
+      total: 1,
+    },
+  };
+}
+
+async function collectRuntimeForVps(vps) {
+  const docker = await getDockerRuntimeSnapshot(vps);
+  if (docker.accessible) {
+    const containers = docker.stats.map(c => ({
+      name: c.name,
+      cpu: parseCpu(c.cpu),
+      mem: parseMem(c.mem),
+      memPerc: parseCpu(c.memPerc),
+    }));
+    const running = docker.ps.filter(p => p.status.includes('Up')).length;
+    const total = docker.ps.length;
+    const totalCpu = containers.reduce((s, c) => s + c.cpu, 0) / Math.max(1, containers.length);
+    const totalMem = containers.reduce((s, c) => s + c.mem, 0);
+    return {
+      mode: 'docker',
+      containers,
+      ps: docker.ps,
+      summary: { totalCpu, totalMem, running, total },
+    };
+  }
+
+  const host = await getHostRuntimeSnapshot(vps);
+  if (!host) {
+    return {
+      mode: 'none',
+      containers: [],
+      ps: [],
+      summary: { totalCpu: 0, totalMem: 0, running: 0, total: 0 },
+    };
+  }
+
+  return {
+    mode: 'host',
+    containers: [{
+      name: host.container.name,
+      cpu: parseCpu(host.container.cpu),
+      mem: parseMem(host.container.mem),
+      memPerc: parseCpu(host.container.memPerc),
+    }],
+    ps: [{ name: host.container.name, status: host.container.status }],
+    summary: host.snapshot,
+  };
+}
+
 // ── SSH command runner ────────────────────────────────────────────────────────
 function runSSH(vps, command) {
   return new Promise((resolve, reject) => {
@@ -965,28 +1092,16 @@ async function collectMetrics(vpsRow) {
   if (!hasSshAccess(vpsRow)) return;
   const vps = { ...vpsRow, password: decrypt(vpsRow.ssh_password) };
   try {
-    const [statsRaw, psRaw] = await Promise.all([
-      runSSH(vps, "docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}'"),
-      runSSH(vps, "docker ps --format '{{.Names}}|{{.Status}}'"),
-    ]);
-
-    const containers = statsRaw.split('\n').filter(Boolean).map(line => {
-      const [name, cpu, mem, memPerc] = line.split('|').map(s => s.trim());
-      return { name, cpu: parseCpu(cpu), mem: parseMem(mem), memPerc: parseCpu(memPerc) };
-    });
-    const ps = psRaw.split('\n').filter(Boolean).map(line => {
-      const idx = line.indexOf('|');
-      return { name: line.slice(0, idx).trim(), status: line.slice(idx + 1).trim() };
-    });
+    const runtime = await collectRuntimeForVps(vps);
 
     const now      = Date.now();
-    const running  = ps.filter(p => p.status.includes('Up')).length;
-    const total    = ps.length;
-    const totalCpu = containers.reduce((s, c) => s + c.cpu, 0) / Math.max(1, containers.length);
-    const totalMem = containers.reduce((s, c) => s + c.mem, 0);
+    const running  = runtime.summary.running;
+    const total    = runtime.summary.total;
+    const totalCpu = runtime.summary.totalCpu;
+    const totalMem = runtime.summary.totalMem;
 
     db.transaction(() => {
-      containers.forEach(c => stmtInsertMetric.run(vpsRow.id, vpsRow.user_id, now, c.name, c.cpu, c.mem, c.memPerc));
+      runtime.containers.forEach(c => stmtInsertMetric.run(vpsRow.id, vpsRow.user_id, now, c.name, c.cpu, c.mem, c.memPerc));
       stmtInsertSnapshot.run(vpsRow.id, vpsRow.user_id, now, totalCpu, totalMem, running, total);
     })();
   } catch {
@@ -1504,19 +1619,43 @@ app.get('/api/metrics/:id', async (req, res) => {
   if (!hasSshAccess(vps)) return res.status(400).json({ error: 'SSH is not configured for this VPS yet' });
 
   try {
-    const [statsRaw, psRaw] = await Promise.all([
-      runSSH(vps, "docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}'"),
-      runSSH(vps, "docker ps --format '{{.Names}}|{{.Status}}'"),
-    ]);
-    const ps = psRaw.split('\n').filter(Boolean).map(line => {
-      const idx = line.indexOf('|');
-      return { name: line.slice(0, idx).trim(), status: line.slice(idx + 1).trim() };
+    const docker = await getDockerRuntimeSnapshot(vps);
+    if (docker.accessible) {
+      const ps = docker.ps;
+      const containers = docker.stats.map(c => ({
+        name: c.name,
+        cpu: c.cpu,
+        mem: c.mem,
+        memPerc: c.memPerc,
+        status: ps.find(p => p.name === c.name)?.status || 'unknown',
+      }));
+      return res.json({
+        vps: { id: vps.slug, name: vps.name, host: vps.host },
+        mode: 'docker',
+        containers,
+        ps,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const host = await getHostRuntimeSnapshot(vps);
+    if (!host) {
+      return res.json({
+        vps: { id: vps.slug, name: vps.name, host: vps.host },
+        mode: 'none',
+        containers: [],
+        ps: [],
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    return res.json({
+      vps: { id: vps.slug, name: vps.name, host: vps.host },
+      mode: 'host',
+      containers: [host.container],
+      ps: [{ name: host.container.name, status: host.container.status }],
+      timestamp: new Date().toISOString(),
     });
-    const containers = statsRaw.split('\n').filter(Boolean).map(line => {
-      const [name, cpu, mem, memPerc] = line.split('|').map(s => s.trim());
-      return { name, cpu, mem, memPerc, status: ps.find(p => p.name === name)?.status || 'unknown' };
-    });
-    res.json({ vps: { id: vps.slug, name: vps.name, host: vps.host }, containers, ps, timestamp: new Date().toISOString() });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1643,7 +1782,19 @@ app.get('/api/logs/:id', async (req, res) => {
   if (!hasSshAccess(vps)) return res.status(400).json({ error: 'SSH is not configured for this VPS yet' });
   const lines = Math.min(parseInt(req.query.lines) || 50, 500);
   try {
-    const names = (await runSSH(vps, "docker ps --format '{{.Names}}'")).split('\n').filter(Boolean);
+    const namesRaw = await runSSH(vps, "docker ps --format '{{.Names}}' 2>&1");
+    const names = splitLines(namesRaw);
+    if (looksLikeDockerUnavailable(namesRaw) || names.length === 0) {
+      const systemRaw = await runSSH(vps, `journalctl -n ${lines} --no-pager 2>/dev/null || tail -n ${lines} /var/log/syslog 2>/dev/null || tail -n ${lines} /var/log/messages 2>/dev/null || echo ""`);
+      const logs = splitLines(systemRaw).map(line => ({
+        container: 'system',
+        timestamp: new Date().toISOString(),
+        message: line,
+        level: detectLogLevel(line),
+      })).slice(-200).reverse();
+      return res.json({ logs, timestamp: new Date().toISOString() });
+    }
+
     const results = await Promise.all(names.map(async name => {
       try {
         const raw = await runSSH(vps, `docker logs --tail ${lines} --timestamps ${name} 2>&1`);
@@ -1662,6 +1813,18 @@ app.get('/api/logs/:id/:container', async (req, res) => {
   if (!vps) return res.status(404).json({ error: 'VPS not found' });
   if (!hasSshAccess(vps)) return res.status(400).json({ error: 'SSH is not configured for this VPS yet' });
   try {
+    if (req.params.container === 'system' || req.params.container === 'host-system') {
+      const lines = Math.min(parseInt(req.query.lines) || 100, 1000);
+      const raw = await runSSH(vps, `journalctl -n ${lines} --no-pager 2>/dev/null || tail -n ${lines} /var/log/syslog 2>/dev/null || tail -n ${lines} /var/log/messages 2>/dev/null || echo ""`);
+      const logs = splitLines(raw).map(line => ({
+        container: 'system',
+        timestamp: new Date().toISOString(),
+        message: line,
+        level: detectLogLevel(line),
+      }));
+      return res.json({ logs, container: 'system' });
+    }
+
     const raw  = await runSSH(vps, `docker logs --tail ${Math.min(parseInt(req.query.lines) || 100, 1000)} --timestamps ${req.params.container} 2>&1`);
     const logs = raw.split('\n').filter(Boolean).map(line => {
       const m = line.match(/^(\S+)\s+(.+)$/);
@@ -1699,18 +1862,9 @@ app.get('/api/alerts/:id', async (req, res) => {
   ];
 
   try {
-    const [statsRaw, psRaw] = await Promise.all([
-      runSSH(vps, "docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}'"),
-      runSSH(vps, "docker ps --format '{{.Names}}|{{.Status}}'"),
-    ]);
-    const containers = statsRaw.split('\n').filter(Boolean).map(line => {
-      const [name, cpu, mem, memPerc] = line.split('|').map(s => s.trim());
-      return { name, cpu, mem, memPerc };
-    });
-    const ps = psRaw.split('\n').filter(Boolean).map(line => {
-      const idx = line.indexOf('|');
-      return { name: line.slice(0, idx).trim(), status: line.slice(idx + 1).trim() };
-    });
+    const docker = await getDockerRuntimeSnapshot(vps);
+    const containers = docker.stats;
+    const ps = docker.ps;
 
     const alerts = [];
     const now    = new Date().toISOString();
@@ -1742,6 +1896,26 @@ app.get('/api/alerts/:id', async (req, res) => {
           alerts.push({ id: `down-${p.name}`, type: 'critical', title: `${short(p.name)} Down`, message: `Status: ${p.status}`, container: short(p.name), value: 0, timestamp: now });
         }
       });
+    }
+
+    if (!docker.accessible) {
+      const host = await getHostRuntimeSnapshot(vps);
+      if (host) {
+        const cpu = parseCpu(host.container.cpu);
+        const mem = parseCpu(host.container.memPerc);
+        for (const rule of cpuRulesFinal) {
+          if (rule.condition === 'gt' && cpu > rule.threshold) {
+            alerts.push({ id: `cpu-${rule.severity[0]}-host-system`, type: rule.severity, title: `host-system CPU ${rule.severity === 'critical' ? 'Critical' : 'High'}`, message: `CPU at ${cpu.toFixed(1)}%`, container: 'host-system', value: cpu, timestamp: now });
+            break;
+          }
+        }
+        for (const rule of memRulesFinal) {
+          if (rule.condition === 'gt' && mem > rule.threshold) {
+            alerts.push({ id: `mem-${rule.severity[0]}-host-system`, type: rule.severity, title: `host-system Memory ${rule.severity === 'critical' ? 'Critical' : 'Warning'}`, message: `Memory at ${mem.toFixed(1)}%`, container: 'host-system', value: mem, timestamp: now });
+            break;
+          }
+        }
+      }
     }
 
     res.json({ alerts, count: alerts.length, critical: alerts.filter(a => a.type === 'critical').length, warning: alerts.filter(a => a.type === 'warning').length, timestamp: now });
@@ -1991,20 +2165,20 @@ app.get('/api/settings/audit-log', (req, res) => {
 // ══════════════════════════════════════════════════════════════════════════════
 
 const DETECTION_COMMANDS = [
-  { tool: 'docker',          cmd: 'docker --version 2>/dev/null || echo "NOT_FOUND"' },
-  { tool: 'docker-compose',  cmd: 'docker compose version 2>/dev/null || echo "NOT_FOUND"' },
-  { tool: 'kubectl',         cmd: 'kubectl version --client 2>/dev/null || echo "NOT_FOUND"' },
-  { tool: 'k3s',             cmd: 'which k3s 2>/dev/null || echo "NOT_FOUND"' },
-  { tool: 'microk8s',        cmd: 'which microk8s 2>/dev/null || echo "NOT_FOUND"' },
+  { tool: 'docker',          cmd: 'command -v docker >/dev/null 2>&1 && docker --version 2>/dev/null || echo "NOT_FOUND"' },
+  { tool: 'docker-compose',  cmd: '(command -v docker >/dev/null 2>&1 && docker compose version 2>/dev/null) || (command -v docker-compose >/dev/null 2>&1 && docker-compose --version 2>/dev/null) || echo "NOT_FOUND"' },
+  { tool: 'kubectl',         cmd: '(command -v kubectl >/dev/null 2>&1 && kubectl version --client 2>/dev/null) || (command -v microk8s >/dev/null 2>&1 && microk8s kubectl version --client 2>/dev/null) || (command -v k3s >/dev/null 2>&1 && k3s kubectl version --client 2>/dev/null) || echo "NOT_FOUND"' },
+  { tool: 'k3s',             cmd: 'command -v k3s >/dev/null 2>&1 && k3s --version 2>/dev/null | head -1 || echo "NOT_FOUND"' },
+  { tool: 'microk8s',        cmd: 'command -v microk8s >/dev/null 2>&1 && microk8s version 2>/dev/null | head -1 || echo "NOT_FOUND"' },
   { tool: 'nginx',           cmd: 'nginx -v 2>&1 || echo "NOT_FOUND"' },
-  { tool: 'nginx-status',    cmd: 'systemctl is-active nginx 2>/dev/null || echo "NOT_FOUND"' },
+  { tool: 'nginx-status',    cmd: '(command -v systemctl >/dev/null 2>&1 && systemctl is-active nginx 2>/dev/null) || (pgrep -x nginx >/dev/null 2>&1 && echo "active") || echo "NOT_FOUND"' },
   { tool: 'gitlab-runner',   cmd: 'gitlab-runner --version 2>/dev/null || echo "NOT_FOUND"' },
-  { tool: 'jenkins',         cmd: 'systemctl is-active jenkins 2>/dev/null || echo "NOT_FOUND"' },
+  { tool: 'jenkins',         cmd: '(command -v systemctl >/dev/null 2>&1 && systemctl is-active jenkins 2>/dev/null) || pgrep -f jenkins 2>/dev/null || echo "NOT_FOUND"' },
   { tool: 'ansible',         cmd: 'ansible --version 2>/dev/null | head -1 || echo "NOT_FOUND"' },
   { tool: 'terraform',       cmd: 'terraform version 2>/dev/null | head -1 || echo "NOT_FOUND"' },
-  { tool: 'prometheus',      cmd: 'systemctl is-active prometheus 2>/dev/null || echo "NOT_FOUND"' },
+  { tool: 'prometheus',      cmd: '(command -v systemctl >/dev/null 2>&1 && systemctl is-active prometheus 2>/dev/null) || pgrep -f prometheus 2>/dev/null || echo "NOT_FOUND"' },
   { tool: 'node',            cmd: 'node --version 2>/dev/null || echo "NOT_FOUND"' },
-  { tool: 'python3',         cmd: 'python3 --version 2>/dev/null || echo "NOT_FOUND"' },
+  { tool: 'python3',         cmd: '(python3 --version 2>/dev/null || python --version 2>/dev/null) || echo "NOT_FOUND"' },
   { tool: 'java',            cmd: 'java -version 2>&1 | head -1 || echo "NOT_FOUND"' },
   { tool: 'php',             cmd: 'php --version 2>/dev/null | head -1 || echo "NOT_FOUND"' },
 ];
@@ -2066,7 +2240,7 @@ async function runDetection(vpsRow, userId, vpsId) {
   } catch {}
 
   try {
-    const pkgFiles = await runSSH(vps, 'find /var/www -name "package.json" -maxdepth 3 2>/dev/null | head -10 || echo ""');
+    const pkgFiles = await runSSH(vps, 'find /home /opt /var/www -maxdepth 5 -name "package.json" 2>/dev/null | head -20 || echo ""');
     for (const p of pkgFiles.split('\n').filter(l => l && !l.includes('NOT_FOUND'))) {
       const dir  = p.replace('/package.json', '');
       const name = dir.split('/').pop() || dir;
@@ -2075,7 +2249,7 @@ async function runDetection(vpsRow, userId, vpsId) {
   } catch {}
 
   try {
-    const reqFiles = await runSSH(vps, 'find /var/www -name "requirements.txt" -maxdepth 3 2>/dev/null | head -10 || echo ""');
+    const reqFiles = await runSSH(vps, 'find /home /opt /var/www -maxdepth 5 -name "requirements.txt" 2>/dev/null | head -20 || echo ""');
     for (const p of reqFiles.split('\n').filter(l => l && !l.includes('NOT_FOUND'))) {
       const dir  = p.replace('/requirements.txt', '');
       const name = dir.split('/').pop() || dir;

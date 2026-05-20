@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash",
+      "PowerShell(node -e \"console.log\\(require\\('crypto'\\).randomBytes\\(32\\).toString\\('hex'\\)\\)\")",
+      "PowerShell(docker version *)",
+      "PowerShell(Get-Command *)",
+      "PowerShell(Get-Content *)"
+    ]
+  }
+}

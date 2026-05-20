@@ -288,7 +288,17 @@ export default function Dashboard() {
       }
       if (cpuHistoryRes.status === 'fulfilled' && cpuHistoryRes.value.ok) {
         const d = await cpuHistoryRes.value.json();
-        setCpuHistory(d.history || {});
+        if (d.history && typeof d.history === 'object') {
+          setCpuHistory(d.history);
+        } else if (Array.isArray(d.points) && Array.isArray(d.containers)) {
+          const mapped: CpuHistoryData = {};
+          d.containers.forEach((name: string) => {
+            mapped[name] = d.points.map((p: Record<string, number>) => Number(p[name] || 0));
+          });
+          setCpuHistory(mapped);
+        } else {
+          setCpuHistory({});
+        }
       }
       setLastUpdated(0);
     } catch {}
