@@ -977,7 +977,7 @@ async function getHostRuntimeSnapshot(vps) {
 
 async function collectRuntimeForVps(vps) {
   const docker = await getDockerRuntimeSnapshot(vps);
-  if (docker.accessible && docker.stats.length > 0) {
+  if (docker.accessible) {
     // Use the raw docker outputs (strings) for container fields so frontend parsing stays consistent
     const containers = docker.stats.map(c => ({ name: c.name, cpu: c.cpu, mem: c.mem, memPerc: c.memPerc }));
     const running = docker.ps.filter(p => p.status.includes('Up')).length;
